@@ -1,0 +1,17 @@
+[
+    {
+        "directory": "/home/cmr/workspace/project/Gamer",
+        "command": "g++ -std=c++20 -IGateServer/include -I/usr/include -I/usr/local/include -I/usr/include/boost -I/usr/include/spdlog -c GateServer/source/Cserver.cc -o Cserver.o",
+        "file": "GateServer/source/Cserver.cc"
+    },
+    {
+        "directory": "/home/cmr/workspace/project/Gamer",
+        "command": "g++ -std=c++20 -IGateServer/include -I/usr/include -I/usr/local/include -I/usr/include/boost -I/usr/include/spdlog -c GateServer/source/Csession.cc -o Csession.o",
+        "file": "GateServer/source/Csession.cc"
+    },
+    {
+        "directory": "/home/cmr/workspace/project/Gamer",
+        "command": "g++ -std=c++20 -IGateServer/include -I/usr/include -I/usr/local/include -I/usr/include/boost -I/usr/include/spdlog -c GateServer/source/IOservicePool.cc -o IOservicePool.o",
+        "file": "GateServer/source/IOservicePool.cc"
+    }
+]

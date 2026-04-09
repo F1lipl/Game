@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <thread>
 #include <vector>
-#include"Singleton..h"
+#include"Singleton.h"
 #include<atomic>
 #include<memory>
 class IOservicePool:public Singleton<IOservicePool>{
@@ -15,9 +15,7 @@ public:
     ~IOservicePool();
     using Work = boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
     using WorkPtr = std::unique_ptr<Work>;
-
     boost::asio::io_context& Getconnection();
-
     void stop();
 
 private:
