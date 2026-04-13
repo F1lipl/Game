@@ -34,16 +34,23 @@ asio::awaitable<std::shared_ptr<Csession>> Cserver::Get_session(std::string id){
     co_return session_[id];
 }
 
+asio::awaitable<void> Cserver::Delete_session(std::string uuid){
+    co_await asio::dispatch(strand_,boost::asio::use_awaitable);
+    if(session_.find(uuid)!=session_.end())session_.erase(uuid);
+    co_return;
+}
+
 void Cserver::StartAccept(){
     asio::io_context& ioc=IOservicePool::Getinstance()->Getconnection();
-    std::shared_ptr<Csession>ptr=std::make_shared<Csession>(this,ioc);//建立一个session，此时session的状态应该是test_connect;
+    auto ptr=std::make_shared<Csession>(this,ioc);
     acceptor_.async_accept(ptr->get_socket(),[ptr,this](boost::system::error_code ec){
         if(ec){
             spdlog::error("connect is error,error is {}",ec.what());
         }
         else{
-            // ptr->start();
-            // start -》修改状态为已连接，协程开启心跳检测，协程开启工作
+            // 启动 session
+            boost::asio::co_spawn(ptr->get_socket().get_executor(), ptr->start(), boost::asio::detached);
+            StartAccept();
         }
     });
 

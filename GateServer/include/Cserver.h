@@ -22,8 +22,9 @@ class Cserver{
 public:
     Cserver(asio::io_context& context,unsigned short port);
     ~Cserver();
-    asio::awaitable<void>Set_session_id(std::string,std::shared_ptr<Csession>);
+    asio::awaitable<void> Set_session_id(std::string,std::shared_ptr<Csession>);
     asio::awaitable<std::shared_ptr<Csession>> Get_session(std::string);
+    asio::awaitable<void>Delete_session(std::string uuid);
 
 private:
     void StartAccept();

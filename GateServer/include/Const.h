@@ -23,3 +23,8 @@ constexpr std::chrono::seconds HEART_TIMEOUT{30};
         Closing,//正在关闭
         Closed//已经关闭
     };
+
+
+constexpr size_t HEAD_TOTAL_LEN=4;
+constexpr size_t HEAD_ID_LEN=2;
+constexpr size_t HEAD_DATA_LEN=2;
