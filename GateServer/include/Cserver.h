@@ -1,5 +1,5 @@
 #pragma once
-#include"Const.h"
+// #include"Const.h"  // Removed to break circular dependency
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
@@ -22,19 +22,20 @@ class Cserver{
 public:
     Cserver(asio::io_context& context,unsigned short port);
     ~Cserver();
+    void start();
     asio::awaitable<void> Set_session_id(std::string,std::shared_ptr<Csession>);
     asio::awaitable<std::shared_ptr<Csession>> Get_session(std::string);
     asio::awaitable<void>Delete_session(std::string uuid);
 
 private:
     void StartAccept();
+    void StartConnect();
     asio::io_context& context_;
     tcp::acceptor acceptor_;
     std::unordered_map<std::string, std::shared_ptr<Csession>>session_;
     // std::mutex mutex_;//管理session类，因为session是跑在不同线程的，所以对map进行修改的时候需要加锁,但是因为用协程去并发，所以千万不能加传统的阻塞mutex
     boost::asio::strand<boost::asio::io_context::executor_type>strand_;//这是boost库提供的串行执行器，保证协程串行的执行函数
     unsigned short port_;
-
 
 
 

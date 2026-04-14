@@ -8,8 +8,10 @@
 #include"Singleton.h"
 #include<atomic>
 #include<memory>
+#include "ClientSession.h"
 class IOservicePool:public Singleton<IOservicePool>{
     friend class Singleton<IOservicePool>;
+    friend class ClientSession;
 public:
     IOservicePool();
     ~IOservicePool();

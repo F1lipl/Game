@@ -19,7 +19,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <iterator>
 #include <memory>
 #include <spdlog/spdlog.h>
 

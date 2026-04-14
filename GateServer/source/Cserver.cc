@@ -5,6 +5,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/system_executor.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/property_tree/ptree_fwd.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <cstdio>
 #include <memory>
@@ -12,6 +13,8 @@
 #include <string>
 #include"../include/Cserver.h"
 #include"../include/IOservicePool.h"
+#include<boost/property_tree/ptree.hpp>
+#include<boost/property_tree/ini_parser.hpp>
 
 Cserver::Cserver(asio::io_context& context,unsigned short port):context_(context),port_(port)
 ,acceptor_(context,{tcp::v4(),port}),
@@ -20,6 +23,23 @@ strand_(context.get_executor())
     context_.run();
     StartAccept();
 }
+
+void Cserver::start(){
+    context_.run();
+    StartAccept();
+    // StartConnect();
+}
+
+// void Cserver::StartConnect(){
+//     boost::property_tree::ptree pt;
+//     try {
+//         boost::property_tree::ini_parser::read_ini("../include/config/config.ini", pt);
+//     } catch (const boost::property_tree::ini_parser_error& e) {
+//         spdlog::error("Failed to read INI file: {}", e.what());
+//     }
+
+// }
+
 
 asio::awaitable<void> Cserver::Set_session_id(std::string id, std::shared_ptr<Csession> ptr)
 {
