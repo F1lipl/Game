@@ -42,6 +42,7 @@ private:
     boost::asio::awaitable<std::chrono::steady_clock::time_point>get_last_recv_time();
     boost::asio::awaitable<void>close();
     boost::asio::awaitable<size_t>Readhead();
+    boost::asio::awaitable<void>ReadData(size_t);
     Cserver* server_;
     boost::asio::steady_timer timer_;//心跳保活
     queue<SendNode>send_que_;
