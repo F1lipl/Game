@@ -4,14 +4,17 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/impl/read.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <boost/tuple/detail/tuple_basic.hpp>
 #include <chrono>
 #include <memory>
 #include <spdlog/spdlog.h>
+#include <sys/stat.h>
 
 ClientSession::ClientSession(boost::asio::io_context &ioc,Cserver *server):
 socket_(ioc),
@@ -19,7 +22,7 @@ buffer_(new char[Buffer_size]),
 state_(ClientSession_state::Connecting),
 server_(server),
 timer_(ioc),
-strand_(ioc.get_executor())
+is_writing_(false)
 
 {
 
@@ -51,51 +54,117 @@ void ClientSession::start(){
 //     }
 
     
-// }递归可能导致栈溢出
-boost::asio::awaitable<void> ClientSession::keep_alive(){
-    while(true){
-       co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
-       if(state_!=ClientSession_state::Connected&&state_!=ClientSession_state::Busy)co_return;
+// // }递归可能导致栈溢出
+// boost::asio::awaitable<void> ClientSession::keep_alive(){
+//     while(true){
+//        co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
+//        if(state_!=ClientSession_state::Connected&&state_!=ClientSession_state::Busy)co_return;
 
-       timer_.expires_after(KEEP_ALIVE_TIME);
-        // sendfile
-       boost::system::error_code ec; 
-       co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-       if(ec){
-            if(ec==boost::asio::error::operation_aborted){
-                spdlog::info("timer canceled, keep-alive exit");
-                co_return; 
-            }  
-            else{
-                co_await Set_State(ClientSession_state::Error);
+//        timer_.expires_after(KEEP_ALIVE_TIME);
+//         // sendfile
+//        boost::system::error_code ec; 
+//        co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+//        if(ec){
+//             if(ec==boost::asio::error::operation_aborted){
+//                 spdlog::info("timer canceled, keep-alive exit");
+//                 // co_await close();
+//                 co_return; 
+//             }  
+//             else{
+//                 co_await Set_State(ClientSession_state::Error);
+//                 co_await close();
+//                 co_return;
+//             }
+//        }
+//        if(state_==ClientSession_state::Busy){
+//             timer_.expires_after(std::chrono::seconds(5));
+//             co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable,ec));
+//             if(ec){
+//                 if(ec==boost::asio::error::operation_aborted)co_return;
+//                 co_await Set_State(ClientSession_state::Error);
+//                 co_await close();
+//                 co_return;
+//             }
+//             continue;
+//        }
+//        if(state_==ClientSession_state::Connected){
+//             auto now=std::chrono::steady_clock::now();
+//             if(now-last_recv_time_>std::chrono::seconds(15)){
+//                 co_await Set_State(ClientSession_state::Timeout);
+//                 co_await close();
+//                 co_return;
+//         }    
+//        }
+      
+//     }
+// }
+
+boost::asio::awaitable<void> ClientSession::keep_alive() {
+    auto self=shared_from_this();
+    boost::system::error_code ec;
+    while (true) {
+        co_await boost::asio::dispatch(socket_.get_executor(), boost::asio::use_awaitable);
+
+        if (state_ != ClientSession_state::Connected &&
+            state_ != ClientSession_state::Busy) {
+            co_return;
+        }
+
+        if (state_ == ClientSession_state::Busy) {
+            timer_.expires_after(std::chrono::seconds(5));
+            ec.clear();
+            co_await timer_.async_wait(
+                boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+            if (ec == boost::asio::error::operation_aborted) {
                 co_return;
             }
-       }
-       if(state_==ClientSession_state::Connected){
-            auto now=std::chrono::steady_clock::now();
-            if(now-last_recv_time_>std::chrono::seconds(15)){
-                co_await Set_State(ClientSession_state::Timeout);
+            if (ec) {
+               state_= ClientSession_state::Error;
                 co_await close();
                 co_return;
-        }    
-       }
-      
+            }
+
+            continue;
+        }
+
+        timer_.expires_after(KEEP_ALIVE_TIME);
+        ec.clear();
+        co_await timer_.async_wait(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+        if (ec == boost::asio::error::operation_aborted) {
+            spdlog::info("timer canceled, keep-alive exit");
+            co_return;
+        }
+        if (ec) {
+            state_=ClientSession_state::Error;
+            co_await close();
+            co_return;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_recv_time_ > std::chrono::seconds(15)) {
+            state_=ClientSession_state::Timeout;
+            co_await close();
+            co_return;
+        }
+
+        // 如果协议要求主动发心跳包，这里发送
     }
 }
 
-boost::asio::awaitable<std::chrono::steady_clock::time_point> ClientSession::get_last_recv_time(){
-    co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
-    auto time=last_recv_time_;
-    co_return time;
+
+std::chrono::steady_clock::time_point  ClientSession::get_last_recv_time(){
+    return last_recv_time_;
 }
-boost::asio::awaitable<void> ClientSession::set_time_stamp(std::chrono::steady_clock::time_point time){
-    co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
+void ClientSession::set_time_stamp(std::chrono::steady_clock::time_point time){
     last_recv_time_=time;
-    co_return;
+    return;
 }
 
 boost::asio::awaitable<void> ClientSession::work(){
-    co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
+    co_await boost::asio::dispatch(socket_.get_executor(),boost::asio::use_awaitable);
     size_t len=co_await Readhead();
     co_await ReadData(len);
     //逻辑层处理
@@ -164,7 +233,7 @@ boost ::asio::awaitable<void> ClientSession::ReadData(size_t len){
 
 boost::asio::awaitable<void> ClientSession::close(){
     auto self=shared_from_this();
-    co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
+    co_await boost::asio::dispatch(socket_.get_executor(),boost::asio::use_awaitable);
     if(state_==ClientSession_state::closed)co_return;
     timer_.cancel();
     state_=ClientSession_state::closing;
@@ -183,3 +252,4 @@ boost::asio::awaitable<void> ClientSession::close(){
     co_return;
 }
 
+//to do sendfile

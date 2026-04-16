@@ -9,16 +9,19 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
+#include <memory>
 #include"../include/MsgNode.h"
 //进行tcp的连接管理，进行粘包处理，心跳保活，收发信息
 // session应该有接收发送缓冲区，socket，并且有唯一uid，同时映射一个玩家uid
 namespace asio=boost::asio;
 using boost::asio::ip::tcp;
 class Cserver;
-class Csession:std::enable_shared_from_this<Csession>
+class RecvNode;
+class MsgNode;
+class SendNode;
+class Csession : public std::enable_shared_from_this<Csession>
 {
 public:
     Csession(Cserver* server,asio::io_context& content);

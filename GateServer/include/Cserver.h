@@ -1,5 +1,5 @@
 #pragma once
-// #include"Const.h"  // Removed to break circular dependency
+#include"Const.h"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
@@ -17,7 +17,7 @@ namespace asio=boost::asio;
 using boost::asio::ip::tcp;
 
 class Csession;
-
+class ClientSession;
 class Cserver{
 public:
     Cserver(asio::io_context& context,unsigned short port);

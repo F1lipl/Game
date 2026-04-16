@@ -1,10 +1,12 @@
 #pragma once
 #include <string>
+#include "ClientSession.h"
 #include "Const.h"
 #include <iostream>
 #include <boost/asio.hpp>
 using namespace std;
 using boost::asio::ip::tcp;
+class ClientSession;
 class MsgNode
 {
 public:
@@ -27,7 +29,8 @@ public:
 };
 
 class RecvNode :public MsgNode {
-	friend class LogicSystem;
+	// friend class LogicSystem;
+	friend class ClientSession;
 public:
 	RecvNode(short max_len, short msg_id);
 private:
@@ -36,6 +39,7 @@ private:
 
 class SendNode :public MsgNode {
 	friend class LogicSystem;
+	friend class ClientSession;
 public:
 	SendNode(const char* msg, short max_len, short msg_id);
 private:
