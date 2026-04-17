@@ -32,10 +32,9 @@ public:
     //     state_=state;
     //     co_return;
     // }
-    // boost::asio::awaitable<uint8_t> Get_state(){
-    //     co_await boost::asio::dispatch(strand_,boost::asio::use_awaitable);
-    //     co_return state_;
-    // }
+    uint8_t get_state(){
+        return state_;
+    }
 
 
 private:

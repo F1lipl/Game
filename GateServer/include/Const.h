@@ -31,11 +31,12 @@ constexpr size_t HEAD_TOTAL_LEN=4;
 constexpr size_t HEAD_ID_LEN=2;
 constexpr size_t HEAD_DATA_LEN=2;
 constexpr size_t CONNECTION_NUMBER=8;
-
+constexpr size_t GAMESERVER_CONN_CNT=8;
+constexpr std::chrono::seconds LINK_DETECTION_TIME=std::chrono::seconds(1);
 enum ClientSession_state:uint8_t{
     Connecting,//初始化正在连接游戏服务器
     Connected,//连接正常，空闲，正常在连接池里
-    Busy,//被借出
+    Busy,//正在发送数据
 
     Timeout,//心跳超时
     Error,//读写异常
