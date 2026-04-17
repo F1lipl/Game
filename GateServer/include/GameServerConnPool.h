@@ -1,45 +1,47 @@
-#include"Const.h"
-#include "ClientSession.h"
+#pragma once
+#include "Const.h"
 #include <boost/asio/awaitable.hpp>
-#include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/system/detail/error_code.hpp>
 #include <cstddef>
 #include <memory>
-#include <queue>
-#include <system_error>
-#include <unordered_map>
 #include <vector>
-#include"IOservicePool.h"
-#include "Cserver.h"
-
-//管理与后端的连接
-//要实现一个检测机制，如果队列里的连接损坏了
-
 
 class Cserver;
-class GameServerConnPool{
+class ClientSession;
+struct SendNode;
 
+class GameServerConnPool {
 public:
-    using Connptr=ClientSession*;
-    GameServerConnPool(Cserver*,boost::asio::io_context&);
-    ~GameServerConnPool();
-    void Init();//创建连接
-    boost::asio::awaitable<std::shared_ptr<ClientSession>>accquir();
-    void release(std::shared_ptr<ClientSession>);
+    using ConnPtr = std::shared_ptr<ClientSession>;
+
+    GameServerConnPool(Cserver* server, boost::asio::io_context& ioc);
+
+    // 约定：初始化阶段在池所属线程调用
+    void Init();
+    void Stop();
+
+    // fire-and-forget：只保证消息成功提交到某个连接的发送队列
+    boost::asio::awaitable<bool> PostMessage(std::shared_ptr<SendNode> node);
+
+    // 如果以后你要做 request-response，可以先拿到一个可用连接
+    boost::asio::awaitable<ConnPtr> GetAvailableConn();
+
 private:
-    boost::asio::awaitable<void>detection();
+    ConnPtr CreateConn();
+    bool IsConnAvailable(const ConnPtr& conn) const;
+    ConnPtr SelectConnUnsafe();
 
-    std::vector<std::shared_ptr<ClientSession>>sessions_;
-    boost::asio::experimental::channel<void(boost::system::error_code ,std::shared_ptr<ClientSession>)>chann_;
+    boost::asio::awaitable<void> detection();
+
+private:
+    Cserver* server_;
     boost::asio::io_context& ioc_;
-    Cserver* server_;    
-    size_t conn_cnt_;
+
+    std::vector<ConnPtr> sessions_;
+    std::size_t conn_cnt_;
+    std::size_t rr_idx_;
+
     boost::asio::steady_timer timer_;
-
-
-
-
-
+    bool initialized_;
 };

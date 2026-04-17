@@ -35,6 +35,7 @@ public:
     uint8_t get_state(){
         return state_;
     }
+    boost::asio::awaitable<void>SendData(std::shared_ptr<SendNode>);
 
 
 private:
@@ -45,7 +46,6 @@ private:
     void close();
     boost::asio::awaitable<size_t>Readhead();
     boost::asio::awaitable<void>ReadData(size_t);
-    boost::asio::awaitable<void>SendData(std::shared_ptr<SendNode>);
     boost::asio::awaitable<void>start_write_loop();
     Cserver* server_;
     boost::asio::steady_timer timer_;//心跳保活
