@@ -1,5 +1,6 @@
 #pragma once
 #include "Const.h"
+#include "MsgNode.h"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -22,10 +23,10 @@ public:
     void Stop();
 
     // fire-and-forget：只保证消息成功提交到某个连接的发送队列
-    boost::asio::awaitable<bool> PostMessage(std::shared_ptr<SendNode> node);
+    bool PostMessage(std::shared_ptr<RecvNode> node);
 
     // 如果以后你要做 request-response，可以先拿到一个可用连接
-    boost::asio::awaitable<ConnPtr> GetAvailableConn();
+    ConnPtr GetAvailableConn();
 
 private:
     ConnPtr CreateConn();

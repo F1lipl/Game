@@ -38,14 +38,13 @@ public:
     bool is_connectd() const{
         return state_==Session_state::Conected;
     }
-
+    boost::asio::awaitable<void> close();
 
 
 private:
     boost::asio::awaitable<void> start_heartbeat();//心跳检测 
     boost ::asio::awaitable<void> work();
     boost::asio::awaitable<size_t> ReadHead();
-    boost::asio::awaitable<void> close();
     boost::asio::awaitable<void>ReadData(size_t len);
     Cserver* server_;
     std::string uuid_;

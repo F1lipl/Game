@@ -1,4 +1,5 @@
 #include"../include/ClientSession.h"
+#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -6,6 +7,7 @@
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/impl/read.hpp>
+#include <boost/asio/impl/write.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -16,6 +18,8 @@
 #include <spdlog/spdlog.h>
 #include <sys/stat.h>
 
+
+//写了read write 心跳检测 关闭//
 ClientSession::ClientSession(boost::asio::io_context &ioc,Cserver *server):
 socket_(ioc),
 buffer_(new char[Buffer_size]),
@@ -30,6 +34,7 @@ is_writing_(false)
 
 
 void ClientSession::start(){
+    //并发建立连接
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::work(),boost::asio::detached);
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::keep_alive(),boost::asio::detached);
 }
@@ -121,7 +126,7 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
             }
             if (ec) {
                state_= ClientSession_state::Error;
-                co_await close();
+                close();
                 co_return;
             }
 
@@ -135,21 +140,22 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
 
         if (ec == boost::asio::error::operation_aborted) {
             spdlog::info("timer canceled, keep-alive exit");
+            close();
             co_return;
         }
         if (ec) {
             state_=ClientSession_state::Error;
-            co_await close();
+            close();
             co_return;
         }
 
         auto now = std::chrono::steady_clock::now();
         if (now - last_recv_time_ > std::chrono::seconds(15)) {
             state_=ClientSession_state::Timeout;
-            co_await close();
+            close();
             co_return;
         }
-
+        //
         // 如果协议要求主动发心跳包，这里发送
     }
 }
@@ -178,12 +184,12 @@ boost::asio::awaitable<size_t>ClientSession::Readhead(){
     auto [ec,lenth]=co_await boost::asio::async_read(socket_,boost::asio::buffer(buffer_,HEAD_TOTAL_LEN),boost::asio::as_tuple(boost::asio::use_awaitable));
     if(ec){
         spdlog::error(" read head error");
-        co_await close();
+        close();
     }
     // 转化字节序
     if(lenth!=HEAD_TOTAL_LEN){
         spdlog::error("recv head lenth false");
-        co_await close();
+        close();
     }
     head_->Clear();
     memcpy(head_->_data,buffer_,HEAD_TOTAL_LEN);
@@ -193,14 +199,14 @@ boost::asio::awaitable<size_t>ClientSession::Readhead(){
     msg_id=boost::asio::detail::socket_ops::network_to_host_short(msg_id);
     if(msg_id!=HEAD_ID_LEN){
         spdlog::error("read head error");
-        co_await close();
+        close();
     }
     short data_len=0;
     memcpy(&data_len,buffer_+HEAD_ID_LEN,HEAD_DATA_LEN);
     data_len=boost::asio::detail::socket_ops::network_to_host_short(data_len);
     if(data_len>Buffer_size){
         spdlog::error("recv package len is too long");
-        co_await close();
+        close();
     }
     spdlog::info(" recv package,msg id is {},data len is {}",msg_id,data_len);
     head_=std::make_shared<RecvNode>(HEAD_TOTAL_LEN,msg_id);
@@ -214,12 +220,12 @@ boost ::asio::awaitable<void> ClientSession::ReadData(size_t len){
     if(ec){
         spdlog::error(" read data error");
         state_=ClientSession_state::Error;
-        co_await close();
+        close();
         co_return;
     }
     if(recv_data_len!=len){
         spdlog::error("recv data len is error");
-        co_await close();
+        close();
     }
     memcpy(body_->_data,buffer_,len);
     co_return;
@@ -231,17 +237,11 @@ boost ::asio::awaitable<void> ClientSession::ReadData(size_t len){
 
 
 
-boost::asio::awaitable<void> ClientSession::close(){
+void ClientSession::close(){
     auto self=shared_from_this();
-    co_await boost::asio::dispatch(socket_.get_executor(),boost::asio::use_awaitable);
-    if(state_==ClientSession_state::closed)co_return;
+    if(state_==ClientSession_state::closed)return;
     timer_.cancel();
     state_=ClientSession_state::closing;
-    while(!send_que_.empty()){
-        auto i=std::move(send_que_.front());
-        send_que_.pop();
-        //写；
-    }
     boost::system::error_code ec;
     socket_.close(ec);
     if (ec) {
@@ -249,7 +249,63 @@ boost::asio::awaitable<void> ClientSession::close(){
     }
     state_ = ClientSession_state::closed;
     spdlog::info("ClientSession closed successfully");
-    co_return;
+    return;
 }
 
-//to do sendfile
+
+// 需要同步的机制，最好放在同一个函数里这样能保证串行执行
+void ClientSession::SendData(std::shared_ptr<SendNode> node) {
+    auto ex = socket_.get_executor();
+    // co_await boost::asio::dispatch(ex, boost::asio::use_awaitable);
+
+    send_que_.push(std::move(node));
+
+    if (is_writing_) {
+        return;
+    }
+
+    is_writing_ = true;
+
+    auto self = shared_from_this();
+    boost::asio::co_spawn(
+        ex,
+        [self]() -> boost::asio::awaitable<void> {
+            co_await self->start_write_loop();
+        },
+        boost::asio::detached);
+
+    return;;
+}
+
+boost::asio::awaitable<void> ClientSession::start_write_loop() {
+    while (!send_que_.empty() &&
+           (state_ == ClientSession_state::Busy ||
+            state_ == ClientSession_state::Connected)) {
+        state_ = ClientSession_state::Busy;
+
+        auto node = send_que_.front();
+        send_que_.pop();
+
+        auto [ec, write_len] =
+            co_await boost::asio::async_write(
+                socket_,
+                boost::asio::buffer(node->_data, node->_total_len),
+                boost::asio::as_tuple(boost::asio::use_awaitable));
+
+        if (ec) {
+            is_writing_ = false;
+            state_ = ClientSession_state::Error;
+            spdlog::error("write data is error {}", ec.message());
+            close();
+            co_return;
+        }
+    }
+
+    is_writing_ = false;
+
+    if (state_ == ClientSession_state::Busy) {
+        state_ = ClientSession_state::Connected;
+    }
+
+    co_return;
+}

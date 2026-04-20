@@ -35,7 +35,7 @@ public:
     uint8_t get_state(){
         return state_;
     }
-    boost::asio::awaitable<void>SendData(std::shared_ptr<SendNode>);
+    void SendData(std::shared_ptr<SendNode>);
 
 
 private:

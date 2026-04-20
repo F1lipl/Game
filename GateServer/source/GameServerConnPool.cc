@@ -8,6 +8,7 @@
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <memory>
 #include <spdlog/spdlog.h>
 
 GameServerConnPool::GameServerConnPool(Cserver* server, boost::asio::io_context& ioc)
@@ -90,26 +91,29 @@ GameServerConnPool::ConnPtr GameServerConnPool::SelectConnUnsafe() {
     return nullptr;
 }
 
-boost::asio::awaitable<GameServerConnPool::ConnPtr>
-GameServerConnPool::GetAvailableConn() {
-    co_await boost::asio::dispatch(ioc_.get_executor(), boost::asio::use_awaitable);
-    co_return SelectConnUnsafe();
+
+std::shared_ptr<ClientSession>  GameServerConnPool::GetAvailableConn() {
+    // co_await boost::asio::dispatch(ioc_.get_executor(), boost::asio::use_awaitable);
+    return SelectConnUnsafe();
 }
 
-boost::asio::awaitable<bool>
-GameServerConnPool::PostMessage(std::shared_ptr<SendNode> node) {
-    co_await boost::asio::dispatch(ioc_.get_executor(), boost::asio::use_awaitable);
+
+bool GameServerConnPool::PostMessage(std::shared_ptr<RecvNode> recvnode) {
+    // co_await boost::asio::dispatch(ioc_.get_executor(), boost::asio::use_awaitable);
 
     auto conn = SelectConnUnsafe();
     if (!conn) {
         spdlog::error("GameServerConnPool::PostMessage failed: no available conn");
-        co_return false;
+        return false;
     }
 
     // 这里假设 ClientSession 提供这个接口：
     // boost::asio::awaitable<void> PostSend(std::shared_ptr<SendNode> node);
-    co_await conn->PostSend(std::move(node));
-    co_return true;
+    //通过逻辑层处理
+    //to do
+    auto node=std::make_shared<SendNode>();
+    conn->SendData(node);
+    return true;
 }
 
 boost::asio::awaitable<void> GameServerConnPool::detection() {
