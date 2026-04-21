@@ -1,5 +1,6 @@
 #pragma once
 #include"Const.h"
+// #include "GameServerConnPool.h"
 #include <algorithm>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/detail/service_registry.hpp>
@@ -8,11 +9,12 @@
 #include <climits>
 #include <memory>
 #include <ranges>
+#include <string>
 #include <thread>
 #include <unordered_map>
-
-
-
+class GameServerConnPool;
+class Csession;
+class SendNode;
 class WorkShard{
 public:
     WorkShard();
@@ -22,19 +24,20 @@ public:
     boost::asio::io_context& get_io_context();
     void start();
     void stop();
-    // void add_user_session(std::string,std::shared_ptr<Csession>);
-    // void PostMessage(std::shared_ptr<RecvNode>);
+    void PostMessage(std::shared_ptr<SendNode>);
     void delete_user_session(std::string name);
     boost::asio::io_context& GetConnection(){
         return ioc_;
     }
-
+    void add_user_session(std::string name,std::shared_ptr<Csession>session){
+        user_session_mgr[name]=session;
+    }
 
 
 private:
     boost::asio::io_context ioc_;
     std::unique_ptr<work>worker_;
-    // std::unique_ptr<GameServerConnPool>ConnPool_;
-    // std::unordered_map<std::string,std::shared_ptr<Csession>>user_session_mgr;
+    std::unique_ptr<GameServerConnPool>ConnPool_;
+    std::unordered_map<std::string,std::shared_ptr<Csession>>user_session_mgr;
     std::thread thread_;  
 };

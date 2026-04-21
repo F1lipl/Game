@@ -1,8 +1,10 @@
 #include "../include/Cserver.h"
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <cstddef>
 #include<spdlog/spdlog.h>
-
+#include"../include/Csession.h"
 
 
 Cserver::Cserver(boost::asio::io_context& ioc,unsigned short port):ioc_(ioc),
@@ -23,27 +25,27 @@ void Cserver::start()
     StartAccept();
 }
 
-boost::asio::io_context& Cserver::get_connection(){
-    auto&ioc= shards_[idx_].get_io_context();
+WorkShard* Cserver::get_shard(){
+    auto * shard=&shards_[idx_];
     idx_=(idx_+1)%WORK_SHARD_NUMBER;
-    return ioc;
+    return shard;
 }
 
 //to do
 void Cserver::StartAccept(){
-    // asio::io_context& ioc=
-    // auto ptr=std::make_shared<Csession>(this,ioc);
-    // acceptor_.async_accept(ptr->get_socket(),[ptr,this](boost::system::error_code ec){
-    //     if(ec){
-    //         spdlog::error("connect is error,error is {}",ec.what());
-    //     }
-    //     else{
-    //         // 启动 session
-    //         boost::asio::co_spawn(ptr->get_socket().get_executor(), ptr->start(), boost::asio::detached);
-    //         StartAccept();
-    //     }
-    // });
-
+    auto* shard=get_shard();
+    auto&ioc= shard->get_io_context();
+    auto ptr=std::make_shared<Csession>(shard,ioc);
+    acceptor_.async_accept(ptr->get_socket(),[shard,ptr,this](boost::system::error_code ec){
+        if(ec){
+            spdlog::error("connect is error,error is {}",ec.message());
+        }
+        else{
+            shard->add_user_session(ptr->get_uuid(), ptr);
+            ptr->start();
+            StartAccept();
+        }
+    });
 
 
 }

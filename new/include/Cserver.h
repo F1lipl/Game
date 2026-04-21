@@ -25,7 +25,7 @@ public:
 private:
     void StartAccept();
     void StartConnect();
-    boost::asio::io_context& get_connection();
+    WorkShard* get_shard();
     asio::io_context& ioc_;
     tcp::acceptor acceptor_;
     unsigned short port_;
