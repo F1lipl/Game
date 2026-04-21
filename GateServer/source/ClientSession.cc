@@ -1,41 +1,24 @@
 #include"../include/ClientSession.h"
-#include <boost/asio/as_tuple.hpp>
+#include<boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
-#include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/error.hpp>
-#include <boost/asio/impl/read.hpp>
-#include <boost/asio/impl/write.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/redirect_error.hpp>
-#include <boost/asio/use_awaitable.hpp>
-#include <boost/system/detail/error_code.hpp>
-#include <boost/tuple/detail/tuple_basic.hpp>
 #include <chrono>
-#include <memory>
-#include <spdlog/spdlog.h>
-#include <sys/stat.h>
+#include"../include/MsgNode.h"
 
-
-//写了read write 心跳检测 关闭//
-ClientSession::ClientSession(boost::asio::io_context &ioc,Cserver *server):
+ClientSession::ClientSession(boost::asio::io_context &ioc,WorkShard* shard):
 socket_(ioc),
 buffer_(new char[Buffer_size]),
 state_(ClientSession_state::Connecting),
-server_(server),
+shard_(shard),
 timer_(ioc),
-is_writing_(false)
-
-{
-
-}
+is_writing_(false),
+head_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, -1)),
+body_(std::make_shared<RecvNode>(Buffer_size, -1)) {}
 
 
 void ClientSession::start(){
     //并发建立连接
-    boost::asio::co_spawn(socket_.get_executor(),ClientSession::work(),boost::asio::detached);
+    boost::asio::co_spawn(socket_.get_executor(),ClientSession::HandleRead(),boost::asio::detached);
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::keep_alive(),boost::asio::detached);
 }
 
@@ -169,74 +152,98 @@ void ClientSession::set_time_stamp(std::chrono::steady_clock::time_point time){
     return;
 }
 
-boost::asio::awaitable<void> ClientSession::work(){
-    co_await boost::asio::dispatch(socket_.get_executor(),boost::asio::use_awaitable);
-    size_t len=co_await Readhead();
-    co_await ReadData(len);
-    //逻辑层处理
-    co_return;
+
+
+boost::asio::awaitable<void> ClientSession::HandleRead(){
+    while(state_!=ClientSession_state::closed&&state_!=ClientSession_state::closing){
+        size_t len=co_await Readhead();
+         if (len == 0 || state_ == Session_state::Closing || state_ == Session_state::Closed) {
+            co_return;
+        }
+
+        bool ok = co_await ReadData(len);
+        if (!ok) {
+            co_return;
+        }
+        last_recv_time_=std::chrono::steady_clock::now();
+        co_return;
+    }
+
+
+    //to do 送进逻辑层，找对应的session回包
+
 }
 
 boost::asio::awaitable<size_t>ClientSession::Readhead(){
-    auto self =shared_from_this();
+   std::memset(buffer_, 0, Buffer_size);
+    auto [ec, length] = co_await boost::asio::async_read(
+        socket_,
+        boost::asio::buffer(buffer_, HEAD_TOTAL_LEN),
+        boost::asio::as_tuple(boost::asio::use_awaitable));
 
-    memset(buffer_,0,Buffer_size);
-    auto [ec,lenth]=co_await boost::asio::async_read(socket_,boost::asio::buffer(buffer_,HEAD_TOTAL_LEN),boost::asio::as_tuple(boost::asio::use_awaitable));
-    if(ec){
-        spdlog::error(" read head error");
+    if (ec) {
+        spdlog::error("session read head error {}" , ec.message());
         close();
+        co_return 0;
     }
-    // 转化字节序
-    if(lenth!=HEAD_TOTAL_LEN){
-        spdlog::error("recv head lenth false");
+
+    if (length != HEAD_TOTAL_LEN) {
+        spdlog::error("session recv head len error, got {}", length);
         close();
+        co_return 0;
     }
-    head_->Clear();
-    memcpy(head_->_data,buffer_,HEAD_TOTAL_LEN);
-    short msg_id=0;
-    memcpy(&msg_id,head_->_data,HEAD_ID_LEN);
-    // 转成本地字节序
-    msg_id=boost::asio::detail::socket_ops::network_to_host_short(msg_id);
-    if(msg_id!=HEAD_ID_LEN){
-        spdlog::error("read head error");
+    short msg_id = 0;
+    std::memcpy(&msg_id, buffer_, HEAD_ID_LEN);
+    msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
+
+    short data_len = 0;
+    std::memcpy(&data_len, buffer_ + HEAD_ID_LEN, HEAD_DATA_LEN);
+    data_len = boost::asio::detail::socket_ops::network_to_host_short(data_len);
+
+    // 这里你原来的 msg_id != HEAD_ID_LEN 明显写错了
+    // 如果你后面有消息枚举范围，这里再换成更严格的校验
+    if (msg_id <= 0) {
+        spdlog::error("session invalid msg id {}", msg_id);
         close();
+        co_return 0;
     }
-    short data_len=0;
-    memcpy(&data_len,buffer_+HEAD_ID_LEN,HEAD_DATA_LEN);
-    data_len=boost::asio::detail::socket_ops::network_to_host_short(data_len);
-    if(data_len>Buffer_size){
-        spdlog::error("recv package len is too long");
+
+    if (data_len <= 0 || data_len > Buffer_size) {
+        spdlog::error("session invalid data len {}", data_len);
         close();
+        co_return 0;
     }
-    spdlog::info(" recv package,msg id is {},data len is {}",msg_id,data_len);
-    head_=std::make_shared<RecvNode>(HEAD_TOTAL_LEN,msg_id);
-    
-    co_return data_len;
+
+    head_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id);
+    std::memcpy(head_->_data, buffer_, HEAD_TOTAL_LEN);
+
+    spdlog::info("session recv package, msg id {}, data len {}", msg_id, data_len);
+
+    co_return static_cast<std::size_t>(data_len);
 }
 
-boost ::asio::awaitable<void> ClientSession::ReadData(size_t len){
-    memset(buffer_,0,Buffer_size);
-    auto [ec,recv_data_len]=co_await boost::asio::async_read(socket_,boost::asio::buffer(buffer_,len),boost::asio::as_tuple(boost::asio::use_awaitable));
-    if(ec){
-        spdlog::error(" read data error");
-        state_=ClientSession_state::Error;
+boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
+    std::memset(buffer_, 0, Buffer_size);
+    auto [ec, recv_data_len] = co_await boost::asio::async_read(
+        socket_,
+        boost::asio::buffer(buffer_, len),
+        boost::asio::as_tuple(boost::asio::use_awaitable));
+
+    if (ec) {
+        spdlog::error("session read data error {}",ec.message());
         close();
-        co_return;
+        co_return false;
     }
-    if(recv_data_len!=len){
-        spdlog::error("recv data len is error");
+
+    if (recv_data_len != len) {
+        spdlog::error("session recv data len error, expect {}, got {}", len, recv_data_len);
         close();
+        co_return false;
     }
-    memcpy(body_->_data,buffer_,len);
-    co_return;
+    body_ = std::make_shared<RecvNode>(static_cast<short>(len), -1);
+    std::memcpy(body_->_data, buffer_, len);
+    co_return true;
 }
-
-
-
-
-
-
-
 void ClientSession::close(){
     auto self=shared_from_this();
     if(state_==ClientSession_state::closed)return;

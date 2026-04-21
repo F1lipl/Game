@@ -1,18 +1,10 @@
-#include "../include/GameServerConnPool.h"
-
-#include "../include/ClientSession.h"
-#include "../include/Const.h"
-
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/redirect_error.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include"../include/GameServerConnPool.h"
+#include"../include/ClientSession.h"
+#include <cstddef>
 #include <memory>
-#include <spdlog/spdlog.h>
 
-GameServerConnPool::GameServerConnPool(Cserver* server, boost::asio::io_context& ioc)
-    : server_(server),
+GameServerConnPool::GameServerConnPool(WorkShard* shard, boost::asio::io_context& ioc)
+    : shard_(shard),
       ioc_(ioc),
       conn_cnt_(GAMESERVER_CONN_CNT),
       rr_idx_(0),
@@ -46,16 +38,17 @@ void GameServerConnPool::Init() {
 void GameServerConnPool::Stop() {
     boost::system::error_code ec;
     timer_.cancel(ec);
-
+    for(size_t i=0;i<CONNECTION_NUMBER;++i){
+        sessions_[i]->close();
+    }
     sessions_.clear();
     rr_idx_ = 0;
     initialized_ = false;
 }
 
 GameServerConnPool::ConnPtr GameServerConnPool::CreateConn() {
-    auto conn = std::make_shared<ClientSession>(ioc_, server_);
+    auto conn = std::make_shared<ClientSession>(ioc_, shard_);
     conn->start();
-
     if (!IsConnAvailable(conn)) {
         return nullptr;
     }
@@ -98,8 +91,9 @@ std::shared_ptr<ClientSession>  GameServerConnPool::GetAvailableConn() {
 }
 
 
-bool GameServerConnPool::PostMessage(std::shared_ptr<RecvNode> recvnode) {
-    // co_await boost::asio::dispatch(ioc_.get_executor(), boost::asio::use_awaitable);
+//调用这个函数的时候一定要已经处理好数据进行回包
+bool GameServerConnPool::PostMessage(std::shared_ptr<SendNode>node) {
+    // co_await boost::asio::dispatch(ioc_.get_executo(), boost::asio::use_awaitable);
 
     auto conn = SelectConnUnsafe();
     if (!conn) {
@@ -109,9 +103,6 @@ bool GameServerConnPool::PostMessage(std::shared_ptr<RecvNode> recvnode) {
 
     // 这里假设 ClientSession 提供这个接口：
     // boost::asio::awaitable<void> PostSend(std::shared_ptr<SendNode> node);
-    //通过逻辑层处理
-    //to do
-    auto node=std::make_shared<SendNode>();
     conn->SendData(node);
     return true;
 }

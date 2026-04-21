@@ -1,12 +1,12 @@
 #pragma once
 #include <string>
-#include "ClientSession.h"
 #include "Const.h"
 #include <iostream>
 #include <boost/asio.hpp>
 using namespace std;
 using boost::asio::ip::tcp;
-class ClientSession;
+
+
 class MsgNode
 {
 public:

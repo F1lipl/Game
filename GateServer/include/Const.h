@@ -1,19 +1,9 @@
 #pragma once
-#include <chrono>
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
-#include<memory>
-#include<mutex>
-#include<iostream>
 #include<spdlog/spdlog.h>
-#include<boost/asio.hpp>
-#include <boost/asio/detached.hpp>
-#include<boost/asio/ip/tcp.hpp>
-#include <string>
-#include<thread>
-#include<vector>
 
-class Cerver;
 
 
 constexpr size_t Buffer_size=1024;
@@ -32,6 +22,7 @@ constexpr size_t HEAD_ID_LEN=2;
 constexpr size_t HEAD_DATA_LEN=2;
 constexpr size_t CONNECTION_NUMBER=8;
 constexpr size_t GAMESERVER_CONN_CNT=8;
+constexpr size_t WORK_SHARD_NUMBER=8;
 constexpr std::chrono::seconds LINK_DETECTION_TIME=std::chrono::seconds(1);
 enum ClientSession_state:uint8_t{
     Connecting,//初始化正在连接游戏服务器

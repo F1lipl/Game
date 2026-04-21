@@ -1,37 +1,20 @@
 #pragma once
+#include<boost/asio.hpp>
 #include"Const.h"
-#include"Cserver.h"
+#include "WorkShard.h"
 #include <boost/asio/awaitable.hpp>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
-#include <boost/smart_ptr/shared_ptr.hpp>
-#include <chrono>
-#include <cstddef>
-#include <cstdint>
-#include <memory>
 #include<queue>
-#include"MsgNode.h"
-//接收数据，心跳保活，
+class RecvNode;
 class MsgNode;
 class SendNode;
-class RecvNode;
-class Cserver;
 class ClientSession:public std::enable_shared_from_this<ClientSession>
 {
 
 public:
-    ClientSession(boost::asio::io_context& ioc,Cserver* server);
+    ClientSession(boost::asio::io_context& ioc,WorkShard* Shard);
     ~ClientSession();
     void start();
-    // boost::asio::awaitable<void> Set_State(uint8_t state){
-    //     co_await asio::dispatch(strand_, asio::use_awaitable);
-    //     state_=state;
-    //     co_return;
-    // }
+    void close();
     uint8_t get_state(){
         return state_;
     }
@@ -39,15 +22,14 @@ public:
 
 
 private:
-    boost::asio::awaitable<void> work();
     boost::asio::awaitable<void>keep_alive();
     void set_time_stamp(std::chrono::steady_clock::time_point time);
     std::chrono::steady_clock::time_point get_last_recv_time();
-    void close();
     boost::asio::awaitable<size_t>Readhead();
-    boost::asio::awaitable<void>ReadData(size_t);
+    boost::asio::awaitable<bool>ReadData(size_t);
     boost::asio::awaitable<void>start_write_loop();
-    Cserver* server_;
+    boost::asio::awaitable<void>HandleRead();
+    WorkShard* shard_;
     boost::asio::steady_timer timer_;//心跳保活
     std::queue<std::shared_ptr<SendNode>>send_que_;//发送队列
     boost::asio::ip::tcp::socket socket_;

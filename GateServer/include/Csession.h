@@ -1,58 +1,78 @@
-#pragma  once
-#include"Const.h"
-#include "Cserver.h"
+#pragma once
+#include "Const.h"
+#include "WorkShard.h"
 #include <boost/asio/awaitable.hpp>
-#include <boost/asio/buffer.hpp>
 #include <boost/asio/io_context.hpp>
+#include<boost/asio.hpp>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <chrono>
-#include <cstddef>
-#include <cstdint>
-#include <string>
-#include <vector>
-#include <memory>
-#include"../include/MsgNode.h"
-//进行tcp的连接管理，进行粘包处理，心跳保活，收发信息
-// session应该有接收发送缓冲区，socket，并且有唯一uid，同时映射一个玩家uid
-namespace asio=boost::asio;
-using boost::asio::ip::tcp;
-class Cserver;
+#include <boost/smart_ptr/shared_ptr.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <queue>
+#include <spdlog/spdlog.h>
+
+class WorkShard;
 class RecvNode;
-class MsgNode;
 class SendNode;
-class Csession : public std::enable_shared_from_this<Csession>
+class MsgNode;
+class Csession:public std::enable_shared_from_this<Csession>
 {
+
 public:
-    Csession(Cserver* server,asio::io_context& content);
-    tcp::socket& get_socket(){
+    Csession(WorkShard* shard,boost::asio::io_context& ioc);
+    boost::asio::ip::tcp::socket& get_socket(){
         return socket_;
     }
-    boost::asio::awaitable<void> start();
+    
     void Set_state(uint8_t state){
         state_=state;
     }
-    bool is_clothing()const{
+     bool is_clothing()const{
         return state_==Session_state::Closing;
     }
     bool is_connectd() const{
         return state_==Session_state::Conected;
     }
-    boost::asio::awaitable<void> close();
-
+    void close(){
+        if (state_== Session_state::Closing ||
+        state_ == Session_state::Closed) {
+        return;
+        }
+        Set_state(Session_state::Closing);
+        spdlog::info("sockset {} is closing",uuid_);
+        timer_.cancel();
+        boost::system::error_code ec;
+        socket_.cancel(ec);
+        if(ec){
+            spdlog::error("session {} cancel error {}",uuid_,ec.message());
+        }
+        ec.clear();
+        socket_.close(ec);
+        if(ec){
+            spdlog::error("session {} close error {}",uuid_,ec.message());
+        }
+        Set_state(Session_state::Closed);
+        shard_->delete_user_session(uuid_);
+        spdlog::info("session {} is closed",uuid_);
+    }
+    void start();
+    //to do post_to_queue 逻辑层调用，把解析的包回给队列里
+    std::string get_uuid(){
+        return uuid_;
+    }
 
 private:
+    boost::asio::awaitable<void>handle_read();
     boost::asio::awaitable<void> start_heartbeat();//心跳检测 
-    boost ::asio::awaitable<void> work();
     boost::asio::awaitable<size_t> ReadHead();
-    boost::asio::awaitable<void>ReadData(size_t len);
-    Cserver* server_;
+    boost::asio::awaitable<bool>ReadData(size_t len);
+    WorkShard* shard_;
     std::string uuid_;
-    tcp::socket socket_;
+    boost::asio::ip::tcp::socket socket_;
     char* buffer_;
     boost::asio::steady_timer timer_;
-    uint8_t state_;
-    std::chrono::steady_clock::time_point last_recv_time;//最后一次收到包的时间
-    std::shared_ptr<MsgNode>Recv_node_;
-    std::shared_ptr<RecvNode>data_node_;
+    uint8_t state_;//状态
+    std::shared_ptr<MsgNode>Recv_node_;//包头的缓冲区
+    std::shared_ptr<RecvNode>data_node_;//数据的缓冲区
+    std::queue<std::shared_ptr<SendNode>>send_que_;
+    bool is_writing_;
 };

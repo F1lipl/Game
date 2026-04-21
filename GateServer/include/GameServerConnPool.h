@@ -1,29 +1,22 @@
 #pragma once
-#include "Const.h"
-#include "MsgNode.h"
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <cstddef>
-#include <memory>
-#include <vector>
-
-class Cserver;
+#include "WorkShard.h"
+#include"Const.h"
+#include<boost/asio.hpp>
 class ClientSession;
-struct SendNode;
-
+class WorkShard;
+class SendNode;
 class GameServerConnPool {
 public:
     using ConnPtr = std::shared_ptr<ClientSession>;
 
-    GameServerConnPool(Cserver* server, boost::asio::io_context& ioc);
+    GameServerConnPool(WorkShard* shard, boost::asio::io_context& ioc);
 
     // 约定：初始化阶段在池所属线程调用
     void Init();
     void Stop();
 
     // fire-and-forget：只保证消息成功提交到某个连接的发送队列
-    bool PostMessage(std::shared_ptr<RecvNode> node);
+    bool PostMessage(std::shared_ptr<SendNode> node);
 
     // 如果以后你要做 request-response，可以先拿到一个可用连接
     ConnPtr GetAvailableConn();
@@ -36,7 +29,7 @@ private:
     boost::asio::awaitable<void> detection();
 
 private:
-    Cserver* server_;
+    WorkShard* shard_;
     boost::asio::io_context& ioc_;
 
     std::vector<ConnPtr> sessions_;
