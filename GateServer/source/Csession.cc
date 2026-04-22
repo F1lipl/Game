@@ -19,6 +19,7 @@
 #include <memory>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <sys/types.h>
 #include"../include/MsgNode.h"
 std::string create_uuid() {
     boost::uuids::uuid u = boost::uuids::random_generator()();
@@ -34,7 +35,9 @@ Csession::Csession(WorkShard* shard, boost::asio::io_context& ioc)
       buffer_(new char[Buffer_size]),
       is_writing_(false),
       Recv_node_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, -1)),
-      data_node_(std::make_shared<RecvNode>(Buffer_size, -1)) {}
+      data_node_(std::make_shared<RecvNode>(Buffer_size, -1)) ,
+      uid_(0)
+      {}
 
 void Csession::start() {
     Set_state(Session_state::Conected);

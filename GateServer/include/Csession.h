@@ -8,6 +8,7 @@
 #include <boost/smart_ptr/shared_ptr.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <concepts>
+#include <cstdint>
 #include <memory>
 #include <queue>
 #include <spdlog/spdlog.h>
@@ -20,6 +21,7 @@ class Csession:public std::enable_shared_from_this<Csession>
 {
 
 public:
+    using uid=std::uint64_t;
     Csession(WorkShard* shard,boost::asio::io_context& ioc);
     boost::asio::ip::tcp::socket& get_socket(){
         return socket_;
@@ -53,6 +55,7 @@ public:
             spdlog::error("session {} close error {}",uuid_,ec.message());
         }
         Set_state(Session_state::Closed);
+        shard_->delete_uid(uid_);
         shard_->delete_user_session(uuid_);
         spdlog::info("session {} is closed",uuid_);
     }
@@ -60,6 +63,9 @@ public:
     //to do post_to_queue 逻辑层调用，把解析的包回给队列里
     std::string get_uuid(){
         return uuid_;
+    }
+    uid get_uid()const{
+        return uid_;
     }
     void SendData(std::shared_ptr<SendNode>);
 
@@ -79,4 +85,5 @@ private:
     std::shared_ptr<RecvNode>data_node_;//数据的缓冲区
     std::queue<std::shared_ptr<SendNode>>send_que_;
     bool is_writing_;
+    uid uid_;
 };
