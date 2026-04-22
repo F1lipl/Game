@@ -7,6 +7,8 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/smart_ptr/shared_ptr.hpp>
 #include <boost/system/detail/error_code.hpp>
+#include <concepts>
+#include <memory>
 #include <queue>
 #include <spdlog/spdlog.h>
 
@@ -59,12 +61,14 @@ public:
     std::string get_uuid(){
         return uuid_;
     }
+    void SendData(std::shared_ptr<SendNode>);
 
 private:
     boost::asio::awaitable<void>handle_read();
     boost::asio::awaitable<void> start_heartbeat();//心跳检测 
     boost::asio::awaitable<size_t> ReadHead();
     boost::asio::awaitable<bool>ReadData(size_t len);
+    boost::asio::awaitable<void>start_write_loop();
     WorkShard* shard_;
     std::string uuid_;
     boost::asio::ip::tcp::socket socket_;
