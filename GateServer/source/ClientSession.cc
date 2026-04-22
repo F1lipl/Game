@@ -2,7 +2,13 @@
 #include<boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/system/detail/error_code.hpp>
 #include <chrono>
+#include <spdlog/spdlog.h>
 #include"../include/MsgNode.h"
 
 ClientSession::ClientSession(boost::asio::io_context &ioc,WorkShard* shard):
@@ -17,10 +23,42 @@ body_(std::make_shared<RecvNode>(Buffer_size, -1)) {}
 
 
 void ClientSession::start(){
-    //并发建立连接
+    boost::asio::co_spawn(socket_.get_executor(),ClientSession::handleconnect(),boost::asio::detached);
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::HandleRead(),boost::asio::detached);
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::keep_alive(),boost::asio::detached);
 }
+
+boost::asio::awaitable<void> ClientSession::handleconnect() {
+    IniConfig ini;
+    std::string err;
+
+    if (!ini.Load("/home/cmr/workspace/project/Gamer/config/config.ini", &err)) {
+        spdlog::error("client session load config.ini err {}", err);
+        co_return;
+    }
+
+    try {
+        int port_value = ini.Require<int>("GameServer.port");
+        std::string ip = ini.Require<std::string>("GameServer.ip");
+
+        if (port_value < 0 || port_value > 65535) {
+            spdlog::error("invalid port: {}", port_value);
+            co_return;
+        }
+
+        auto addr = boost::asio::ip::make_address(ip);
+        boost::asio::ip::tcp::endpoint ep(
+            addr,
+            static_cast<unsigned short>(port_value)
+        );
+
+        co_await socket_.async_connect(ep, boost::asio::use_awaitable);
+        spdlog::info("connect to {}:{} success", ip, port_value);
+    } catch (const std::exception& e) {
+        spdlog::error("handleconnect exception: {}", e.what());
+    }
+}
+
 
 //每十五秒苏醒一次，向服务器发送一次ping包
 // boost::asio::awaitable<void> ClientSession::keep_alive(){
@@ -245,11 +283,20 @@ boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
     co_return true;
 }
 void ClientSession::close(){
-    auto self=shared_from_this();
-    if(state_==ClientSession_state::closed)return;
-    timer_.cancel();
-    state_=ClientSession_state::closing;
+    if(state_==ClientSession_state::closed||state_==ClientSession_state::closing)return;
     boost::system::error_code ec;
+    state_=ClientSession_state::closing;
+    spdlog::info("clientsession is closing");
+    timer_.cancel(ec);
+    if(ec){
+        spdlog::error("clientsession timer cancel error,error is {}",ec.message());
+    }
+    ec.clear();
+    socket_.cancel(ec);
+    if(ec){
+        spdlog::error("clientsession cancel error error is {}",ec.message());
+    }
+    ec.clear();
     socket_.close(ec);
     if (ec) {
         spdlog::error("ClientSession close socket failed: {}", ec.message());

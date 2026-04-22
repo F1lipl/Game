@@ -3,7 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include<spdlog/spdlog.h>
-
+#include"IniConfig.h"
 
 
 constexpr size_t Buffer_size=1024;

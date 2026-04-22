@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <string>
 
-class IniConfig {
+class IniConfig{
 public:
     bool Load(const std::string& file_path, std::string* err = nullptr) {
         try {

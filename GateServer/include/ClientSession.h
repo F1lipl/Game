@@ -20,7 +20,6 @@ public:
     }
     void SendData(std::shared_ptr<SendNode>);
 
-
 private:
     boost::asio::awaitable<void>keep_alive();
     void set_time_stamp(std::chrono::steady_clock::time_point time);
@@ -29,6 +28,7 @@ private:
     boost::asio::awaitable<bool>ReadData(size_t);
     boost::asio::awaitable<void>start_write_loop();
     boost::asio::awaitable<void>HandleRead();
+    boost::asio::awaitable<void>handleconnect();
     WorkShard* shard_;
     boost::asio::steady_timer timer_;//心跳保活
     std::queue<std::shared_ptr<SendNode>>send_que_;//发送队列
