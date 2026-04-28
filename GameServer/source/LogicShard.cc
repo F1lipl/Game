@@ -1,4 +1,5 @@
 #include"../include/LogicShard.h"
+#include"../include/LogicRouter.h"
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -50,5 +51,6 @@ void LogicShard::postTask(LogicTask task) {
 }
 
 void LogicShard::handleTask(LogicTask task) {
-    // 根据 msg_id 分发到具体业务回调
+    MsgId id=task.msg_id;
+    LogicRouter::Getinstance()->handle_task(id)(this,std::move(task));
 }
