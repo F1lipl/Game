@@ -52,4 +52,5 @@ private:
     std::unordered_map<std::string,std::shared_ptr<Csession>>user_session_mgr;
     std::unordered_map<uid,std::string>user_id_mgr;
     std::thread thread_;  
+    bool b_stop_={true};
 };
