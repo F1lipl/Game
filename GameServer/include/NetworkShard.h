@@ -1,9 +1,7 @@
 #pragma once
-
 #include "GameServerTypes.h"
 #include "GatewayLinkSession.h"
 #include "GameServer.h"
-
 #include <boost/asio.hpp>
 
 #include <cstddef>

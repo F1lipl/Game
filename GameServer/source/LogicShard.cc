@@ -4,6 +4,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <memory>
+#include <spdlog/spdlog.h>
 #include <thread>
 
 
@@ -52,5 +53,9 @@ void LogicShard::postTask(LogicTask task) {
 
 void LogicShard::handleTask(LogicTask task) {
     MsgId id=task.msg_id;
-    LogicRouter::Getinstance()->handle_task(id)(this,std::move(task));
+    bool ok=LogicRouter::Getinstance()->Dispatch(this,std::move(task));
+    if(!ok){
+        spdlog::debug("call back undefined msgid");
+    }
+    spdlog::debug("handle msg success");
 }

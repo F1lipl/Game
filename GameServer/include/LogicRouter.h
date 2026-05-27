@@ -6,7 +6,6 @@ class LogicShard;
 class LogicRouter:public Singleton<LogicRouter>{
     friend Singleton<LogicRouter>;
 public:
-
     using Task= std::function<void (LogicShard*,LogicTask)>;
       bool Dispatch(LogicShard* shard, LogicTask task) {
         auto iter = handlers_.find(task.msg_id);
@@ -20,9 +19,6 @@ public:
 
 private:
     LogicRouter() = default;
-
-    void RegisterHandlers();
-
     void Register(MsgId id, Task task) {
         handlers_[id] = std::move(task);
     }

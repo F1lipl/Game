@@ -26,12 +26,11 @@ public:
 
 private:
     static void RegisterCallback(std::uint16_t msgid, Handler handler);
-    static  bool is_init_;
+    // static  bool is_init_;
 
 private:
     static std::unordered_map<std::uint16_t, Handler> callbacks_;
 };
-ClientIngressRouter::is_init_
 
 class BackendIngressRouter {
 public:
