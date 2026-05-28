@@ -1,0 +1,420 @@
+syntax = "proto3";
+
+package rts.v1;
+
+// Message id ranges:
+// 10000-10099 connection/auth/heartbeat
+// 10100-10199 room/lobby/start
+// 11000-11999 client gameplay commands
+// 12000-12999 server gameplay notifications
+// 20000-20999 GateServer <-> GameServer internal envelopes
+// 60000-60999 error/debug
+
+enum MessageId {
+  MSG_ID_UNSPECIFIED = 0;
+
+  MSG_ID_LOGIN_REQ = 10001;
+  MSG_ID_LOGIN_RSP = 10002;
+  MSG_ID_PING_REQ = 10003;
+  MSG_ID_PONG_RSP = 10004;
+
+  MSG_ID_CREATE_ROOM_REQ = 10101;
+  MSG_ID_CREATE_ROOM_RSP = 10102;
+  MSG_ID_JOIN_ROOM_REQ = 10103;
+  MSG_ID_JOIN_ROOM_RSP = 10104;
+  MSG_ID_LEAVE_ROOM_REQ = 10105;
+  MSG_ID_ROOM_STATE_NTF = 10106;
+  MSG_ID_PLAYER_READY_REQ = 10107;
+  MSG_ID_GAME_START_NTF = 10108;
+
+  MSG_ID_ENTER_BATTLE_REQ = 11001;
+  MSG_ID_MOVE_CMD = 11002;
+  MSG_ID_ATTACK_CMD = 11003;
+  MSG_ID_SKILL_CMD = 11004;
+  MSG_ID_HARVEST_CMD = 11005;
+  MSG_ID_STORE_RESOURCE_CMD = 11006;
+  MSG_ID_PICKUP_RESOURCE_CMD = 11007;
+  MSG_ID_BUILD_CMD = 11008;
+  MSG_ID_CONSTRUCT_CMD = 11009;
+  MSG_ID_TRAIN_UNIT_CMD = 11010;
+  MSG_ID_STOP_CMD = 11011;
+
+  MSG_ID_ENTER_BATTLE_RSP = 12001;
+  MSG_ID_COMMAND_FRAME_NTF = 12002;
+  MSG_ID_COMMAND_REJECTED_NTF = 12003;
+  MSG_ID_ENTITY_SPAWN_NTF = 12004;
+  MSG_ID_ENTITY_DESPAWN_NTF = 12005;
+  MSG_ID_WORLD_DELTA_NTF = 12006;
+  MSG_ID_SNAPSHOT_NTF = 12007;
+  MSG_ID_RESOURCE_DELTA_NTF = 12008;
+  MSG_ID_GAME_OVER_NTF = 12009;
+
+  MSG_ID_GATE_TO_GAME_ENVELOPE = 20001;
+  MSG_ID_GAME_TO_GATE_ENVELOPE = 20002;
+  MSG_ID_GATE_LINK_HELLO = 20003;
+  MSG_ID_CLIENT_DISCONNECTED_NTF = 20004;
+
+  MSG_ID_ERROR_NTF = 60001;
+}
+
+enum Team {
+  TEAM_PLAYER = 0;
+  TEAM_ENEMY1 = 1;
+  TEAM_ENEMY2 = 2;
+  TEAM_ENEMY3 = 3;
+  TEAM_NEUTRAL = 4;
+  TEAM_NONE = 5;
+}
+
+enum EntityType {
+  ENTITY_UNIT = 0;
+  ENTITY_BUILDING = 1;
+  ENTITY_RESOURCE_FIELD = 2;
+  ENTITY_RESOURCE_DROP = 3;
+}
+
+enum UnitType {
+  UNIT_VILLAGER = 0;
+}
+
+enum BuildingType {
+  BUILDING_RESOURCE_CAMP = 0;
+  BUILDING_VILLAGER_INN = 1;
+  BUILDING_BARRACKS = 2;
+  BUILDING_CRYSTAL = 3;
+}
+
+enum ResourceType {
+  RESOURCE_FOOD = 0;
+  RESOURCE_WOOD = 1;
+  RESOURCE_GOLD = 2;
+  RESOURCE_NONE = 3;
+}
+
+enum ResourceRaw {
+  RAW_BERRIES = 0;
+  RAW_GOLD = 1;
+  RAW_WOOD = 2;
+  RAW_FARM = 3;
+}
+
+enum UnitState {
+  UNIT_STATE_IDLE = 0;
+  UNIT_STATE_MOVING = 1;
+  UNIT_STATE_WORKING = 2;
+  UNIT_STATE_ATTACKING = 3;
+  UNIT_STATE_DEAD = 4;
+}
+
+enum ErrorCode {
+  ERROR_NONE = 0;
+  ERROR_INVALID_REQUEST = 1;
+  ERROR_NOT_LOGGED_IN = 2;
+  ERROR_ROOM_NOT_FOUND = 3;
+  ERROR_NOT_IN_ROOM = 4;
+  ERROR_PERMISSION_DENIED = 5;
+  ERROR_INVALID_ENTITY = 6;
+  ERROR_NOT_ENOUGH_RESOURCES = 7;
+  ERROR_INVALID_BUILD_POSITION = 8;
+  ERROR_SERVER_BUSY = 9;
+}
+
+message Vec3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message EntityRef {
+  EntityType type = 1;
+  uint64 id = 2;
+}
+
+message ResourceCost {
+  uint32 food = 1;
+  uint32 wood = 2;
+  uint32 gold = 3;
+}
+
+message LoginReq {
+  string account = 1;
+  string token = 2;
+  uint32 client_version = 3;
+}
+
+message LoginRsp {
+  ErrorCode code = 1;
+  uint64 uid = 2;
+  string reason = 3;
+}
+
+message PingReq {
+  uint64 client_time_ms = 1;
+}
+
+message PongRsp {
+  uint64 client_time_ms = 1;
+  uint64 server_time_ms = 2;
+}
+
+message CreateRoomReq {
+  string room_name = 1;
+  uint32 max_players = 2;
+}
+
+message CreateRoomRsp {
+  ErrorCode code = 1;
+  uint64 room_id = 2;
+  string reason = 3;
+}
+
+message JoinRoomReq {
+  uint64 room_id = 1;
+}
+
+message JoinRoomRsp {
+  ErrorCode code = 1;
+  uint64 room_id = 2;
+  Team assigned_team = 3;
+  string reason = 4;
+}
+
+message LeaveRoomReq {
+  uint64 room_id = 1;
+}
+
+message RoomPlayer {
+  uint64 uid = 1;
+  Team team = 2;
+  bool ready = 3;
+}
+
+message RoomStateNtf {
+  uint64 room_id = 1;
+  repeated RoomPlayer players = 2;
+}
+
+message PlayerReadyReq {
+  uint64 room_id = 1;
+  bool ready = 2;
+}
+
+message GameStartNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  uint32 tick_rate = 3;
+  uint32 snapshot_rate = 4;
+  uint64 random_seed = 5;
+}
+
+message EnterBattleReq {
+  uint64 room_id = 1;
+}
+
+message EnterBattleRsp {
+  ErrorCode code = 1;
+  uint64 room_id = 2;
+  uint64 server_tick = 3;
+  string reason = 4;
+}
+
+message MoveCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  Vec3 target_position = 3;
+  bool attack_move = 4;
+}
+
+message AttackCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  EntityRef target = 3;
+}
+
+message SkillCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  uint32 skill_id = 3;
+  EntityRef target = 4;
+  Vec3 target_position = 5;
+}
+
+message HarvestCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  uint64 resource_field_id = 3;
+}
+
+message StoreResourceCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  uint64 resource_camp_id = 3;
+}
+
+message PickupResourceCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+  uint64 resource_drop_id = 3;
+}
+
+message BuildCmd {
+  uint64 room_id = 1;
+  repeated uint64 builder_unit_ids = 2;
+  BuildingType building_type = 3;
+  Vec3 position = 4;
+  float yaw = 5;
+}
+
+message ConstructCmd {
+  uint64 room_id = 1;
+  repeated uint64 builder_unit_ids = 2;
+  uint64 under_construction_building_id = 3;
+}
+
+message TrainUnitCmd {
+  uint64 room_id = 1;
+  uint64 producer_building_id = 2;
+  UnitType unit_type = 3;
+}
+
+message StopCmd {
+  uint64 room_id = 1;
+  repeated uint64 actor_unit_ids = 2;
+}
+
+message AcceptedCommand {
+  uint64 command_id = 1;
+  uint64 uid = 2;
+  uint64 client_seq = 3;
+  uint32 inner_msg_id = 4;
+  bytes payload = 5;
+}
+
+message CommandFrameNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  repeated AcceptedCommand commands = 3;
+}
+
+message CommandRejectedNtf {
+  uint64 room_id = 1;
+  uint64 client_seq = 2;
+  ErrorCode code = 3;
+  string reason = 4;
+}
+
+message EntitySpawnNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  EntityType entity_type = 3;
+  bytes entity_state = 4;
+}
+
+message EntityDespawnNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  EntityRef entity = 3;
+}
+
+message ResourceDeltaNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  PlayerResources resources = 3;
+}
+
+message GameOverNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  Team winner = 3;
+}
+
+message UnitStateSnapshot {
+  uint64 id = 1;
+  Team team = 2;
+  UnitType unit_type = 3;
+  Vec3 position = 4;
+  float yaw = 5;
+  float hp = 6;
+  UnitState state = 7;
+  EntityRef target = 8;
+  uint32 carried_amount = 9;
+  ResourceRaw carried_raw = 10;
+}
+
+message BuildingStateSnapshot {
+  uint64 id = 1;
+  Team team = 2;
+  BuildingType building_type = 3;
+  Vec3 position = 4;
+  float yaw = 5;
+  float hp = 6;
+  float constructed_percent = 7;
+}
+
+message ResourceFieldStateSnapshot {
+  uint64 id = 1;
+  ResourceRaw raw = 2;
+  Vec3 position = 3;
+  float yaw = 4;
+  uint32 amount_left = 5;
+}
+
+message ResourceDropStateSnapshot {
+  uint64 id = 1;
+  ResourceRaw raw = 2;
+  Vec3 position = 3;
+  uint32 amount = 4;
+}
+
+message PlayerResources {
+  uint64 uid = 1;
+  uint32 food = 2;
+  uint32 wood = 3;
+  uint32 gold = 4;
+}
+
+message WorldDeltaNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  repeated UnitStateSnapshot units = 3;
+  repeated BuildingStateSnapshot buildings = 4;
+  repeated PlayerResources resources = 5;
+}
+
+message SnapshotNtf {
+  uint64 room_id = 1;
+  uint64 server_tick = 2;
+  repeated UnitStateSnapshot units = 3;
+  repeated BuildingStateSnapshot buildings = 4;
+  repeated ResourceFieldStateSnapshot resource_fields = 5;
+  repeated ResourceDropStateSnapshot resource_drops = 6;
+  repeated PlayerResources resources = 7;
+}
+
+message GateToGameEnvelope {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+  uint64 room_id = 3;
+  uint32 inner_msg_id = 4;
+  uint64 client_seq = 5;
+  uint64 client_tick = 6;
+  bytes payload = 7;
+}
+
+message GameToGateEnvelope {
+  repeated uint64 target_uids = 1;
+  uint32 inner_msg_id = 2;
+  uint64 server_tick = 3;
+  bytes payload = 4;
+}
+
+message GateLinkHello {
+  uint32 gate_id = 1;
+  uint32 link_index = 2;
+}
+
+message ClientDisconnectedNtf {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+  string reason = 3;
+}

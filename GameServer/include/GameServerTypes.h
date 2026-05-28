@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "../../common/Protocol.h"
 
 class RecvNode;
 class SendNode;
@@ -13,12 +14,7 @@ using ShardId = std::uint32_t;
 using NetworkShardId = std::uint32_t;
 using SeqId = std::uint64_t;
 
-enum class MsgId : std::uint16_t {
-    EnterDungeonReq = 11001,
-    MoveInput       = 11002,
-    AttackInput     = 11003,
-    SkillInput      = 11004,
-};
+using MsgId = rts::protocol::MsgId;
 
 struct LogicTask {
     MsgId msg_id {};

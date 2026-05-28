@@ -23,9 +23,9 @@ public:
 
     static void Init();
     static void HandleMsg(std::uint16_t msgid, const MsgContext& context);
+    static void RegisterCallback(std::uint16_t msgid, Handler handler);
 
 private:
-    static void RegisterCallback(std::uint16_t msgid, Handler handler);
     // static  bool is_init_;
 
 private:

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include<spdlog/spdlog.h>
 #include"../include/Csession.h"
+#include "../include/Router.h"
 
 
 Cserver::Cserver(boost::asio::io_context& ioc,unsigned short port):ioc_(ioc),
@@ -19,6 +20,9 @@ idx_(0)
     
 void Cserver::start()
 {   
+    ClientIngressRouter::Init();
+    BackendIngressRouter::Init();
+
     for(size_t i=0;i<WORK_SHARD_NUMBER;++i){
         shards_[i].start();
     }

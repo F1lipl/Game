@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 class GameServerConnPool;
 class Csession;
 class SendNode;
@@ -26,6 +27,9 @@ public:
     void start();
     void stop();
     void PostMessage(std::shared_ptr<SendNode>);
+    bool SendToUid(uid id, std::shared_ptr<SendNode> node);
+    std::size_t Broadcast(std::shared_ptr<SendNode> node);
+    std::shared_ptr<Csession> FindSessionByUid(uid id);
     void delete_user_session(std::string name);
     boost::asio::io_context& GetConnection(){
         return ioc_;

@@ -1,7 +1,58 @@
 #include "../include/NetworkShard.h"
+#include "../include/MsgNode.h"
+#include "../../common/ProtoCodec.h"
+#include "rts.pb.h"
 
 #include <boost/asio/post.hpp>
 #include <spdlog/spdlog.h>
+
+#include <string>
+#include <string_view>
+
+namespace {
+
+std::string_view BodyView(const std::shared_ptr<const RecvNode>& body) {
+    if (!body || body->_data == nullptr || body->_total_len == 0) {
+        return {};
+    }
+
+    return std::string_view(body->_data, body->_total_len);
+}
+
+bool ParseGateToGameEnvelope(const std::shared_ptr<const RecvNode>& body,
+                             rts::v1::GateToGameEnvelope& envelope) {
+    if (!rts::protocol::ParseProtoFromBytes(BodyView(body), envelope)) {
+        spdlog::warn("parse GateToGameEnvelope failed");
+        return false;
+    }
+
+    if (envelope.inner_msg_id() == 0) {
+        spdlog::warn("GateToGameEnvelope missing inner_msg_id");
+        return false;
+    }
+
+    return true;
+}
+
+std::string ExtractPacketPayload(const std::shared_ptr<SendNode>& packet) {
+    if (!packet || packet->_data == nullptr || packet->_total_len == 0) {
+        return {};
+    }
+
+    if (packet->_total_len >= HEAD_TOTAL_LEN) {
+        const auto* data = reinterpret_cast<const unsigned char*>(packet->_data);
+        const auto magic = static_cast<std::uint16_t>((data[0] << 8) | data[1]);
+        if (magic == rts::protocol::kPacketMagic) {
+            return std::string(
+                packet->_data + HEAD_TOTAL_LEN,
+                packet->_total_len - HEAD_TOTAL_LEN);
+        }
+    }
+
+    return std::string(packet->_data, packet->_total_len);
+}
+
+} // namespace
 
 NetworkShard::NetworkShard(GameServer* server,
                            boost::asio::io_context& ioc,
@@ -157,19 +208,39 @@ void NetworkShard::OnPacket(LinkId link_id,
         return;
     }
 
-    switch (msg_id) {
-    case MsgId::EnterDungeonReq:
-        HandleEnterDungeon(link_id, msg_id, seq, std::move(body));
+    auto dispatch_msg_id = msg_id;
+    auto dispatch_seq = seq;
+
+    if (msg_id == MsgId::GateToGameEnvelope) {
+        rts::v1::GateToGameEnvelope envelope;
+        if (!ParseGateToGameEnvelope(body, envelope)) {
+            return;
+        }
+
+        dispatch_msg_id = static_cast<MsgId>(envelope.inner_msg_id());
+        dispatch_seq = envelope.client_seq();
+    }
+
+    switch (dispatch_msg_id) {
+    case MsgId::EnterBattleReq:
+        HandleEnterDungeon(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
         break;
 
-    case MsgId::MoveInput:
-    case MsgId::AttackInput:
-    case MsgId::SkillInput:
-        HandlePlayerInput(link_id, msg_id, seq, std::move(body));
+    case MsgId::MoveCmd:
+    case MsgId::AttackCmd:
+    case MsgId::SkillCmd:
+    case MsgId::HarvestCmd:
+    case MsgId::StoreResourceCmd:
+    case MsgId::PickupResourceCmd:
+    case MsgId::BuildCmd:
+    case MsgId::ConstructCmd:
+    case MsgId::TrainUnitCmd:
+    case MsgId::StopCmd:
+        HandlePlayerInput(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
         break;
 
     default:
-        spdlog::warn("unknown msg_id {}", static_cast<std::uint16_t>(msg_id));
+        spdlog::warn("unknown msg_id {}", static_cast<std::uint16_t>(dispatch_msg_id));
         break;
     }
 }
@@ -290,7 +361,12 @@ Uid NetworkShard::ParseUid(const std::shared_ptr<const RecvNode>& body) {
     //   uint32 inner_msg_id = 2;
     //   bytes payload = 3;
     // }
-    return 0;
+    rts::v1::GateToGameEnvelope envelope;
+    if (!ParseGateToGameEnvelope(body, envelope)) {
+        return 0;
+    }
+
+    return envelope.uid();
 }
 
 std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(const NetworkTask& task) {
@@ -304,5 +380,22 @@ std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(const Network
     // }
     //
     // 如果 task.body 已经是完整可发包，可以第一版直接返回。
-    return task.body;
+    rts::v1::GameToGateEnvelope envelope;
+    for (auto uid : task.target_uids) {
+        envelope.add_target_uids(uid);
+    }
+    envelope.set_inner_msg_id(static_cast<std::uint16_t>(task.msg_id));
+    envelope.set_server_tick(task.seq);
+    envelope.set_payload(ExtractPacketPayload(task.body));
+
+    std::string payload;
+    if (!rts::protocol::SerializeProtoToString(envelope, payload)) {
+        spdlog::error("serialize GameToGateEnvelope failed");
+        return nullptr;
+    }
+
+    return std::make_shared<SendNode>(
+        payload.empty() ? nullptr : payload.data(),
+        static_cast<std::uint32_t>(payload.size()),
+        static_cast<std::uint16_t>(MsgId::GameToGateEnvelope));
 }

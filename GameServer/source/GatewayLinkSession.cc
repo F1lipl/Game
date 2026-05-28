@@ -118,8 +118,7 @@ void GatewayLinkSession::PostSend(std::shared_ptr<SendNode> node) {
 boost::asio::awaitable<void> GatewayLinkSession::handle_read() {
     while (!is_closing() && state_ != Session_state::Closed) {
         auto body_len = co_await ReadHead();
-        if (body_len == 0 ||
-            is_closing() ||
+        if (is_closing() ||
             state_ == Session_state::Closed) {
             co_return;
         }
@@ -141,6 +140,13 @@ boost::asio::awaitable<void> GatewayLinkSession::handle_read() {
         //     msg_id,
         //     seq,
         //     data_node_);
+        if (owner_ && Recv_node_) {
+            owner_->OnPacket(
+                static_cast<LinkId>(slot_id_),
+                static_cast<MsgId>(Recv_node_->MsgId()),
+                0,
+                data_node_);
+        }
     }
 }
 
@@ -189,20 +195,55 @@ boost::asio::awaitable<std::size_t> GatewayLinkSession::ReadHead() {
         co_return 0;
     }
 
-    std::uint16_t data_len = 0;
-    std::memcpy(&data_len, buffer_.get() + HEAD_ID_LEN, HEAD_DATA_LEN);
-    data_len = boost::asio::detail::socket_ops::network_to_host_short(data_len);
+    std::uint16_t magic = 0;
+    std::memcpy(&magic, buffer_.get() + HEAD_MAGIC_OFFSET, HEAD_MAGIC_LEN);
+    magic = boost::asio::detail::socket_ops::network_to_host_short(magic);
+    if (magic != rts::protocol::kPacketMagic) {
+        spdlog::error("gateway link session {} invalid packet magic {}", uuid_, magic);
+        Close();
+        co_return 0;
+    }
 
-    if (data_len == 0 || data_len > Buffer_size) {
+    std::uint16_t msg_id = 0;
+    std::memcpy(&msg_id, buffer_.get() + HEAD_ID_OFFSET, HEAD_ID_LEN);
+    msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
+
+    std::uint16_t flags = 0;
+    std::memcpy(&flags, buffer_.get() + HEAD_FLAGS_OFFSET, HEAD_FLAGS_LEN);
+    flags = boost::asio::detail::socket_ops::network_to_host_short(flags);
+
+    std::uint32_t data_len = 0;
+    std::memcpy(&data_len, buffer_.get() + HEAD_DATA_OFFSET, HEAD_DATA_LEN);
+    data_len = boost::asio::detail::socket_ops::network_to_host_long(data_len);
+
+    if (msg_id == 0) {
+        spdlog::error("gateway link session {} invalid msg id {}", uuid_, msg_id);
+        Close();
+        co_return 0;
+    }
+
+    if (data_len > Buffer_size) {
         spdlog::error("gateway link session {} invalid body len {}", uuid_, data_len);
         Close();
         co_return 0;
     }
 
+    Recv_node_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id, flags);
+    std::memcpy(Recv_node_->_data, buffer_.get(), HEAD_TOTAL_LEN);
+
     co_return static_cast<std::size_t>(data_len);
 }
 
 boost::asio::awaitable<bool> GatewayLinkSession::ReadData(std::size_t len) {
+    data_node_ = std::make_shared<RecvNode>(
+        len,
+        Recv_node_ ? Recv_node_->MsgId() : 0,
+        Recv_node_ ? Recv_node_->Flags() : rts::protocol::kPacketFlagNone);
+
+    if (len == 0) {
+        co_return true;
+    }
+
     std::memset(buffer_.get(), 0, Buffer_size);
 
     auto [ec, recv_len] = co_await boost::asio::async_read(
@@ -223,9 +264,7 @@ boost::asio::awaitable<bool> GatewayLinkSession::ReadData(std::size_t len) {
         co_return false;
     }
 
-    // TODO:
-    // data_node_ = std::make_shared<RecvNode>(...);
-    // std::memcpy(data_node_->_data, buffer_.get(), len);
+    std::memcpy(data_node_->_data, buffer_.get(), len);
 
     co_return true;
 }

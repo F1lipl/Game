@@ -4,9 +4,10 @@
 #include <cstdint>
 #include<spdlog/spdlog.h>
 #include"IniConfig.h"
+#include "../../common/Protocol.h"
 
 
-constexpr size_t Buffer_size=1024;
+constexpr size_t Buffer_size = rts::protocol::kMaxPacketBodyLen;
 constexpr std::chrono::seconds HEART_TIMEOUT{30};
 constexpr std::chrono::seconds KEEP_ALIVE_TIME{15};
  enum  Session_state:uint8_t{
@@ -17,9 +18,15 @@ constexpr std::chrono::seconds KEEP_ALIVE_TIME{15};
         Closed//已经关闭
     };
 
-constexpr size_t HEAD_TOTAL_LEN=4;
-constexpr size_t HEAD_ID_LEN=2;
-constexpr size_t HEAD_DATA_LEN=2;
+constexpr size_t HEAD_TOTAL_LEN = rts::protocol::kPacketHeaderLen;
+constexpr size_t HEAD_MAGIC_LEN = rts::protocol::kPacketMagicLen;
+constexpr size_t HEAD_ID_LEN = rts::protocol::kPacketMsgIdLen;
+constexpr size_t HEAD_FLAGS_LEN = rts::protocol::kPacketFlagsLen;
+constexpr size_t HEAD_DATA_LEN = rts::protocol::kPacketBodyLenLen;
+constexpr size_t HEAD_MAGIC_OFFSET = rts::protocol::kPacketMagicOffset;
+constexpr size_t HEAD_ID_OFFSET = rts::protocol::kPacketMsgIdOffset;
+constexpr size_t HEAD_FLAGS_OFFSET = rts::protocol::kPacketFlagsOffset;
+constexpr size_t HEAD_DATA_OFFSET = rts::protocol::kPacketBodyLenOffset;
 constexpr size_t CONNECTION_NUMBER=8;
 constexpr size_t GAMESERVER_CONN_CNT=8;
 constexpr size_t WORK_SHARD_NUMBER=8;

@@ -9,6 +9,7 @@
 #include <boost/system/detail/error_code.hpp>
 #include <concepts>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <queue>
 #include <spdlog/spdlog.h>
@@ -61,11 +62,20 @@ public:
     }
     void start();
     //to do post_to_queue 逻辑层调用，把解析的包回给队列里
-    std::string get_uuid(){
+    std::string get_uuid() const {
         return uuid_;
     }
     uid get_uid()const{
         return uid_;
+    }
+    std::uint64_t get_session_id() const {
+        return static_cast<std::uint64_t>(std::hash<std::string>{}(uuid_));
+    }
+    void BindUid(uid id) {
+        uid_ = id;
+        if (shard_) {
+            shard_->add_uid(id, uuid_);
+        }
     }
     void SendData(std::shared_ptr<SendNode>);
 

@@ -21,6 +21,7 @@
 #include <string>
 #include <sys/types.h>
 #include"../include/MsgNode.h"
+#include "../include/Router.h"
 std::string create_uuid() {
     boost::uuids::uuid u = boost::uuids::random_generator()();
     return boost::uuids::to_string(u);
@@ -34,8 +35,8 @@ Csession::Csession(WorkShard* shard, boost::asio::io_context& ioc)
       state_(Session_state::Invalid),
       buffer_(new char[Buffer_size]),
       is_writing_(false),
-      Recv_node_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, -1)),
-      data_node_(std::make_shared<RecvNode>(Buffer_size, -1)) ,
+      Recv_node_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, 0)),
+      data_node_(std::make_shared<RecvNode>(Buffer_size, 0)) ,
       uid_(0)
       {}
 
@@ -48,7 +49,7 @@ void Csession::start() {
 boost::asio::awaitable<void> Csession::handle_read() {
     while (state_ != Session_state::Closing && state_ != Session_state::Closed) {
         std::size_t len = co_await ReadHead();
-        if (len == 0 || state_ == Session_state::Closing || state_ == Session_state::Closed) {
+        if (state_ == Session_state::Closing || state_ == Session_state::Closed) {
             co_return;
         }
 
@@ -64,6 +65,11 @@ boost::asio::awaitable<void> Csession::handle_read() {
         // TODO: 送进逻辑层
         // 例如:
         // shard_->GetRouter().HandleMsg(shared_from_this(), Recv_node_, data_node_);
+        ClientIngressRouter::MsgContext ctx;
+        ctx.shard = shard_;
+        ctx.session = shared_from_this();
+        ctx.body = data_node_;
+        ClientIngressRouter::HandleMsg(Recv_node_->MsgId(), ctx);
     }
 }
 
@@ -112,13 +118,26 @@ boost::asio::awaitable<std::size_t> Csession::ReadHead() {
         close();
         co_return 0;
     }
-    short msg_id = 0;
-    std::memcpy(&msg_id, buffer_, HEAD_ID_LEN);
+    std::uint16_t magic = 0;
+    std::memcpy(&magic, buffer_ + HEAD_MAGIC_OFFSET, HEAD_MAGIC_LEN);
+    magic = boost::asio::detail::socket_ops::network_to_host_short(magic);
+    if (magic != rts::protocol::kPacketMagic) {
+        spdlog::error("session {} invalid packet magic {}", uuid_, magic);
+        close();
+        co_return 0;
+    }
+
+    std::uint16_t msg_id = 0;
+    std::memcpy(&msg_id, buffer_ + HEAD_ID_OFFSET, HEAD_ID_LEN);
     msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
 
-    short data_len = 0;
-    std::memcpy(&data_len, buffer_ + HEAD_ID_LEN, HEAD_DATA_LEN);
-    data_len = boost::asio::detail::socket_ops::network_to_host_short(data_len);
+    std::uint16_t flags = 0;
+    std::memcpy(&flags, buffer_ + HEAD_FLAGS_OFFSET, HEAD_FLAGS_LEN);
+    flags = boost::asio::detail::socket_ops::network_to_host_short(flags);
+
+    std::uint32_t data_len = 0;
+    std::memcpy(&data_len, buffer_ + HEAD_DATA_OFFSET, HEAD_DATA_LEN);
+    data_len = boost::asio::detail::socket_ops::network_to_host_long(data_len);
 
     // 这里你原来的 msg_id != HEAD_ID_LEN 明显写错了
     // 如果你后面有消息枚举范围，这里再换成更严格的校验
@@ -128,21 +147,31 @@ boost::asio::awaitable<std::size_t> Csession::ReadHead() {
         co_return 0;
     }
 
-    if (data_len <= 0 || data_len > Buffer_size) {
+    if (data_len > Buffer_size) {
         spdlog::error("session {} invalid data len {}", uuid_, data_len);
         close();
         co_return 0;
     }
 
-    Recv_node_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id);
+    Recv_node_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id, flags);
     std::memcpy(Recv_node_->_data, buffer_, HEAD_TOTAL_LEN);
 
-    spdlog::info("session {} recv package, msg id {}, data len {}", uuid_, msg_id, data_len);
+    spdlog::info("session {} recv package, msg id {}, flags {}, data len {}",
+                 uuid_, msg_id, flags, data_len);
 
     co_return static_cast<std::size_t>(data_len);
 }
 
 boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
+    data_node_ = std::make_shared<RecvNode>(
+        len,
+        Recv_node_ ? Recv_node_->MsgId() : 0,
+        Recv_node_ ? Recv_node_->Flags() : rts::protocol::kPacketFlagNone);
+
+    if (len == 0) {
+        co_return true;
+    }
+
     std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
@@ -161,7 +190,6 @@ boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
         close();
         co_return false;
     }
-    data_node_ = std::make_shared<RecvNode>(static_cast<short>(len), -1);
     std::memcpy(data_node_->_data, buffer_, len);
 
     co_return true;

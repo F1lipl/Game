@@ -38,8 +38,10 @@ void GameServerConnPool::Init() {
 void GameServerConnPool::Stop() {
     boost::system::error_code ec;
     timer_.cancel(ec);
-    for(size_t i=0;i<CONNECTION_NUMBER;++i){
-        sessions_[i]->close();
+    for (auto& session : sessions_) {
+        if (session) {
+            session->close();
+        }
     }
     sessions_.clear();
     rr_idx_ = 0;
@@ -49,10 +51,6 @@ void GameServerConnPool::Stop() {
 GameServerConnPool::ConnPtr GameServerConnPool::CreateConn() {
     auto conn = std::make_shared<ClientSession>(ioc_, shard_);
     conn->start();
-    if (!IsConnAvailable(conn)) {
-        return nullptr;
-    }
-
     return conn;
 }
 

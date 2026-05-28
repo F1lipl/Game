@@ -10,6 +10,7 @@
 #include <chrono>
 #include <spdlog/spdlog.h>
 #include"../include/MsgNode.h"
+#include "../include/Router.h"
 
 ClientSession::ClientSession(boost::asio::io_context &ioc,WorkShard* shard):
 socket_(ioc),
@@ -18,28 +19,30 @@ state_(ClientSession_state::Connecting),
 shard_(shard),
 timer_(ioc),
 is_writing_(false),
-head_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, -1)),
-body_(std::make_shared<RecvNode>(Buffer_size, -1)) {}
+head_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, 0)),
+body_(std::make_shared<RecvNode>(Buffer_size, 0)) {}
 
 
 void ClientSession::start(){
     boost::asio::co_spawn(socket_.get_executor(),ClientSession::handleconnect(),boost::asio::detached);
-    boost::asio::co_spawn(socket_.get_executor(),ClientSession::HandleRead(),boost::asio::detached);
-    boost::asio::co_spawn(socket_.get_executor(),ClientSession::keep_alive(),boost::asio::detached);
 }
 
 boost::asio::awaitable<void> ClientSession::handleconnect() {
     IniConfig ini;
     std::string err;
 
-    if (!ini.Load("/home/cmr/workspace/project/Gamer/config/config.ini", &err)) {
+    if (!ini.Load("config/config.ini", &err) &&
+        !ini.Load("../config/config.ini", &err) &&
+        !ini.Load("/home/cmr/workspace/project/Gamer/config/config.ini", &err)) {
         spdlog::error("client session load config.ini err {}", err);
         co_return;
     }
 
     try {
         int port_value = ini.Require<int>("GameServer.port");
-        std::string ip = ini.Require<std::string>("GameServer.ip");
+        std::string ip = ini.Get<std::string>(
+            "GameServer.ip",
+            ini.Get<std::string>("GameServer.host", "127.0.0.1"));
 
         if (port_value < 0 || port_value > 65535) {
             spdlog::error("invalid port: {}", port_value);
@@ -53,6 +56,21 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
         );
 
         co_await socket_.async_connect(ep, boost::asio::use_awaitable);
+        state_ = ClientSession_state::Connected;
+        last_recv_time_ = std::chrono::steady_clock::now();
+        auto self = shared_from_this();
+        boost::asio::co_spawn(
+            socket_.get_executor(),
+            [self]() -> boost::asio::awaitable<void> {
+                co_await self->HandleRead();
+            },
+            boost::asio::detached);
+        boost::asio::co_spawn(
+            socket_.get_executor(),
+            [self]() -> boost::asio::awaitable<void> {
+                co_await self->keep_alive();
+            },
+            boost::asio::detached);
         spdlog::info("connect to {}:{} success", ip, port_value);
     } catch (const std::exception& e) {
         spdlog::error("handleconnect exception: {}", e.what());
@@ -195,7 +213,7 @@ void ClientSession::set_time_stamp(std::chrono::steady_clock::time_point time){
 boost::asio::awaitable<void> ClientSession::HandleRead(){
     while(state_!=ClientSession_state::closed&&state_!=ClientSession_state::closing){
         size_t len=co_await Readhead();
-         if (len == 0 || state_ == Session_state::Closing || state_ == Session_state::Closed) {
+         if (state_ == ClientSession_state::closing || state_ == ClientSession_state::closed) {
             co_return;
         }
 
@@ -204,7 +222,12 @@ boost::asio::awaitable<void> ClientSession::HandleRead(){
             co_return;
         }
         last_recv_time_=std::chrono::steady_clock::now();
-        co_return;
+
+        BackendIngressRouter::BackendMsgContext ctx;
+        ctx.shard = shard_;
+        ctx.backend_session = shared_from_this();
+        ctx.body = body_;
+        BackendIngressRouter::HandleMsg(head_->MsgId(), ctx);
     }
 
 
@@ -230,13 +253,26 @@ boost::asio::awaitable<size_t>ClientSession::Readhead(){
         close();
         co_return 0;
     }
-    short msg_id = 0;
-    std::memcpy(&msg_id, buffer_, HEAD_ID_LEN);
+    std::uint16_t magic = 0;
+    std::memcpy(&magic, buffer_ + HEAD_MAGIC_OFFSET, HEAD_MAGIC_LEN);
+    magic = boost::asio::detail::socket_ops::network_to_host_short(magic);
+    if (magic != rts::protocol::kPacketMagic) {
+        spdlog::error("session invalid packet magic {}", magic);
+        close();
+        co_return 0;
+    }
+
+    std::uint16_t msg_id = 0;
+    std::memcpy(&msg_id, buffer_ + HEAD_ID_OFFSET, HEAD_ID_LEN);
     msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
 
-    short data_len = 0;
-    std::memcpy(&data_len, buffer_ + HEAD_ID_LEN, HEAD_DATA_LEN);
-    data_len = boost::asio::detail::socket_ops::network_to_host_short(data_len);
+    std::uint16_t flags = 0;
+    std::memcpy(&flags, buffer_ + HEAD_FLAGS_OFFSET, HEAD_FLAGS_LEN);
+    flags = boost::asio::detail::socket_ops::network_to_host_short(flags);
+
+    std::uint32_t data_len = 0;
+    std::memcpy(&data_len, buffer_ + HEAD_DATA_OFFSET, HEAD_DATA_LEN);
+    data_len = boost::asio::detail::socket_ops::network_to_host_long(data_len);
 
     // 这里你原来的 msg_id != HEAD_ID_LEN 明显写错了
     // 如果你后面有消息枚举范围，这里再换成更严格的校验
@@ -246,21 +282,31 @@ boost::asio::awaitable<size_t>ClientSession::Readhead(){
         co_return 0;
     }
 
-    if (data_len <= 0 || data_len > Buffer_size) {
+    if (data_len > Buffer_size) {
         spdlog::error("session invalid data len {}", data_len);
         close();
         co_return 0;
     }
 
-    head_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id);
+    head_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id, flags);
     std::memcpy(head_->_data, buffer_, HEAD_TOTAL_LEN);
 
-    spdlog::info("session recv package, msg id {}, data len {}", msg_id, data_len);
+    spdlog::info("session recv package, msg id {}, flags {}, data len {}",
+                 msg_id, flags, data_len);
 
     co_return static_cast<std::size_t>(data_len);
 }
 
 boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
+    body_ = std::make_shared<RecvNode>(
+        len,
+        head_ ? head_->MsgId() : 0,
+        head_ ? head_->Flags() : rts::protocol::kPacketFlagNone);
+
+    if (len == 0) {
+        co_return true;
+    }
+
     std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
@@ -278,7 +324,6 @@ boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
         close();
         co_return false;
     }
-    body_ = std::make_shared<RecvNode>(static_cast<short>(len), -1);
     std::memcpy(body_->_data, buffer_, len);
     co_return true;
 }
