@@ -82,6 +82,7 @@ endif()
 add_library(GameServerLib STATIC
     GameServer/source/GameServer.cc
     GameServer/source/GatewayLinkSession.cc
+    GameServer/source/LogicRouter.cc
     GameServer/source/LogicShard.cc
     GameServer/source/MsgNode.cc
     GameServer/source/NetworkRouter.cc
@@ -99,6 +100,14 @@ target_link_libraries(GameServerLib PUBLIC
     Boost::system
     spdlog::spdlog
     Threads::Threads
+)
+
+add_executable(GameServer
+    GameServer/source/GameServerMain.cc
+)
+
+target_link_libraries(GameServer PRIVATE
+    GameServerLib
 )
 
 add_library(GateServerLib STATIC
@@ -124,4 +133,12 @@ target_link_libraries(GateServerLib PUBLIC
     Boost::system
     spdlog::spdlog
     Threads::Threads
+)
+
+add_executable(GateServer
+    GateServer/source/GateServerMain.cc
+)
+
+target_link_libraries(GateServer PRIVATE
+    GateServerLib
 )

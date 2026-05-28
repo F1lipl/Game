@@ -22,6 +22,7 @@ public:
     Cserver(asio::io_context& ioc,unsigned short port);
 
     void start();
+    void stop();
 private:
     void StartAccept();
     void StartConnect();
@@ -31,4 +32,5 @@ private:
     unsigned short port_;
     std::vector<WorkShard>shards_;
     size_t idx_;
+    bool stopping_ {false};
 };

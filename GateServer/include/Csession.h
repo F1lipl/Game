@@ -24,6 +24,7 @@ class Csession:public std::enable_shared_from_this<Csession>
 public:
     using uid=std::uint64_t;
     Csession(WorkShard* shard,boost::asio::io_context& ioc);
+    ~Csession();
     boost::asio::ip::tcp::socket& get_socket(){
         return socket_;
     }

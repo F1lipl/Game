@@ -22,9 +22,19 @@ is_writing_(false),
 head_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, 0)),
 body_(std::make_shared<RecvNode>(Buffer_size, 0)) {}
 
+ClientSession::~ClientSession() {
+    delete[] buffer_;
+}
+
 
 void ClientSession::start(){
-    boost::asio::co_spawn(socket_.get_executor(),ClientSession::handleconnect(),boost::asio::detached);
+    auto self = shared_from_this();
+    boost::asio::co_spawn(
+        socket_.get_executor(),
+        [self]() -> boost::asio::awaitable<void> {
+            co_await self->handleconnect();
+        },
+        boost::asio::detached);
 }
 
 boost::asio::awaitable<void> ClientSession::handleconnect() {

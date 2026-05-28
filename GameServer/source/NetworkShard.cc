@@ -222,8 +222,12 @@ void NetworkShard::OnPacket(LinkId link_id,
     }
 
     switch (dispatch_msg_id) {
+    case MsgId::CreateRoomReq:
+    case MsgId::JoinRoomReq:
+    case MsgId::LeaveRoomReq:
+    case MsgId::PlayerReadyReq:
     case MsgId::EnterBattleReq:
-        HandleEnterDungeon(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
+        HandleRoomLifecycle(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
         break;
 
     case MsgId::MoveCmd:
@@ -243,6 +247,37 @@ void NetworkShard::OnPacket(LinkId link_id,
         spdlog::warn("unknown msg_id {}", static_cast<std::uint16_t>(dispatch_msg_id));
         break;
     }
+}
+
+void NetworkShard::HandleRoomLifecycle(LinkId link_id,
+                                       MsgId msg_id,
+                                       SeqId seq,
+                                       std::shared_ptr<const RecvNode> body) {
+    auto uid = ParseUid(body);
+    if (uid == 0) {
+        spdlog::warn("room lifecycle failed: invalid uid");
+        return;
+    }
+
+    if (!server_ || server_->LogicShardCount() == 0) {
+        spdlog::warn("room lifecycle failed: no logic shard");
+        return;
+    }
+
+    auto logic_shard_id = FindLogicShard(uid).value_or(0);
+    if (logic_shard_id >= server_->LogicShardCount()) {
+        logic_shard_id = 0;
+    }
+
+    BindUidToLogicShard(uid, logic_shard_id);
+
+    LogicTask task;
+    task.msg_id = msg_id;
+    task.uid = uid;
+    task.seq = seq;
+    task.body = std::move(body);
+
+    server_->PostToLogic(logic_shard_id, std::move(task));
 }
 
 void NetworkShard::HandleEnterDungeon(LinkId link_id,

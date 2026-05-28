@@ -9,11 +9,13 @@
 #include <vector>
 
 class NetworkShard;
+class LogicShard;
 class GameServer {
 public:
     GameServer(boost::asio::io_context& network_ioc,
                std::size_t logic_shard_count,
                std::size_t gateway_link_count);
+    ~GameServer();
 
     void Start();
     void Stop();
@@ -29,8 +31,9 @@ private:
     boost::asio::io_context& network_ioc_;
 
     std::unique_ptr<NetworkShard> network_shard_;
-    // std::vector<std::unique_ptr<LogicShard>> logic_shards_;
+    std::vector<std::unique_ptr<LogicShard>> logic_shards_;
 
+    std::size_t logic_shard_count_ {};
     std::size_t gateway_link_count_ {};
     bool stopping_ {false};
 };

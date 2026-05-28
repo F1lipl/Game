@@ -40,10 +40,26 @@ Csession::Csession(WorkShard* shard, boost::asio::io_context& ioc)
       uid_(0)
       {}
 
+Csession::~Csession() {
+    delete[] buffer_;
+}
+
 void Csession::start() {
     Set_state(Session_state::Conected);
-    boost::asio::co_spawn(socket_.get_executor(), start_heartbeat(), boost::asio::detached);
-    boost::asio::co_spawn(socket_.get_executor(), handle_read(), boost::asio::detached);
+
+    auto self = shared_from_this();
+    boost::asio::co_spawn(
+        socket_.get_executor(),
+        [self]() -> boost::asio::awaitable<void> {
+            co_await self->start_heartbeat();
+        },
+        boost::asio::detached);
+    boost::asio::co_spawn(
+        socket_.get_executor(),
+        [self]() -> boost::asio::awaitable<void> {
+            co_await self->handle_read();
+        },
+        boost::asio::detached);
 }
 
 boost::asio::awaitable<void> Csession::handle_read() {
@@ -196,15 +212,27 @@ boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
 }
 
 void Csession::SendData(std::shared_ptr<SendNode> node){
+    if (!node ||
+        state_ == Session_state::Closing ||
+        state_ == Session_state::Closed) {
+        return;
+    }
+
     send_que_.push(std::move(node));
     if(is_writing_)return;
+    is_writing_ = true;
+
     auto self=shared_from_this();
-    boost::asio::co_spawn(socket_.get_executor(),start_write_loop(),boost::asio::detached);
+    boost::asio::co_spawn(
+        socket_.get_executor(),
+        [self]() -> boost::asio::awaitable<void> {
+            co_await self->start_write_loop();
+        },
+        boost::asio::detached);
     return;
 }
 
 boost::asio::awaitable<void>Csession::start_write_loop(){
-    is_writing_=true;
     while(state_!=Session_state::Closed&&state_!=Session_state::Closing&&!send_que_.empty()){
         auto node=std::move(send_que_.front());
         send_que_.pop();

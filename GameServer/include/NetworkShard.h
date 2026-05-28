@@ -51,6 +51,11 @@ public:
 private:
     void HandleNetworkTask(NetworkTask task);
 
+    void HandleRoomLifecycle(LinkId link_id,
+                             MsgId msg_id,
+                             SeqId seq,
+                             std::shared_ptr<const RecvNode> body);
+
     void HandleEnterDungeon(LinkId link_id,
                             MsgId msg_id,
                             SeqId seq,

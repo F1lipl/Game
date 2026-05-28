@@ -21,6 +21,13 @@ cmake --preset linux-debug
 cmake --build --preset linux-debug -j
 ```
 
+Run locally on the Linux server:
+
+```bash
+./build/linux-debug/GameServer
+./build/linux-debug/GateServer
+```
+
 Release build:
 
 ```bash
