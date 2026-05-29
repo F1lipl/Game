@@ -8,6 +8,8 @@
 
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -79,6 +81,7 @@ void NetworkShard::Stop() {
     }
 
     uid_to_logic_shard_.clear();
+    uid_to_gateway_route_.clear();
     rr_idx_ = 0;
     next_logic_idx_ = 0;
 }
@@ -162,6 +165,7 @@ void NetworkShard::OnSessionClosed(std::size_t slot_id, std::uint64_t generation
 
     slot.state = SlotState::Closed;
     slot.session.reset();
+    UnbindGatewayLink(slot_id, generation);
 
     spdlog::warn("gateway link slot {} closed", slot_id);
 }
@@ -198,6 +202,23 @@ std::shared_ptr<GatewayLinkSession> NetworkShard::SelectAvailableSession() {
     }
 
     return nullptr;
+}
+
+std::shared_ptr<GatewayLinkSession> NetworkShard::FindSessionByRoute(
+    const GatewayRoute& route) const {
+    if (route.link_id >= slots_.size()) {
+        return nullptr;
+    }
+
+    const auto& slot = slots_[route.link_id];
+    if (slot.generation != route.generation ||
+        slot.state != SlotState::Connected ||
+        !slot.session ||
+        !slot.session->IsAvailable()) {
+        return nullptr;
+    }
+
+    return slot.session;
 }
 
 void NetworkShard::OnPacket(LinkId link_id,
@@ -270,6 +291,7 @@ void NetworkShard::HandleRoomLifecycle(LinkId link_id,
     }
 
     BindUidToLogicShard(uid, logic_shard_id);
+    BindUidToGatewayLink(uid, link_id);
 
     LogicTask task;
     task.msg_id = msg_id;
@@ -293,6 +315,7 @@ void NetworkShard::HandleEnterDungeon(LinkId link_id,
     auto logic_shard_id = PickLogicShard();
 
     BindUidToLogicShard(uid, logic_shard_id);
+    BindUidToGatewayLink(uid, link_id);
 
     LogicTask task;
     task.msg_id = msg_id;
@@ -319,6 +342,8 @@ void NetworkShard::HandlePlayerInput(LinkId link_id,
         return;
     }
 
+    BindUidToGatewayLink(uid, link_id);
+
     LogicTask task;
     task.msg_id = msg_id;
     task.uid = uid;
@@ -341,19 +366,81 @@ void NetworkShard::HandleNetworkTask(NetworkTask task) {
         return;
     }
 
-    auto session = SelectAvailableSession();
-    if (!session) {
-        spdlog::error("send to gateway failed: no available gateway link");
+    if (task.target_uids.empty()) {
+        auto session = SelectAvailableSession();
+        if (!session) {
+            spdlog::error("send to gateway failed: no available gateway link");
+            return;
+        }
+
+        auto packet = BuildGameToGatewayEnvelope(task, task.target_uids);
+        if (!packet) {
+            spdlog::error("send to gateway failed: build envelope failed");
+            return;
+        }
+
+        session->PostSend(std::move(packet));
         return;
     }
 
-    auto packet = BuildGameToGatewayEnvelope(task);
-    if (!packet) {
-        spdlog::error("send to gateway failed: build envelope failed");
-        return;
+    std::unordered_map<LinkId, std::vector<Uid>> routed_uids;
+    std::vector<Uid> fallback_uids;
+
+    for (auto uid : task.target_uids) {
+        auto route_it = uid_to_gateway_route_.find(uid);
+        if (route_it == uid_to_gateway_route_.end() ||
+            !FindSessionByRoute(route_it->second)) {
+            fallback_uids.push_back(uid);
+            continue;
+        }
+
+        routed_uids[route_it->second.link_id].push_back(uid);
     }
 
-    session->PostSend(std::move(packet));
+    for (const auto& [link_id, uids] : routed_uids) {
+        if (uids.empty()) {
+            continue;
+        }
+
+        const auto route_it = uid_to_gateway_route_.find(uids.front());
+        if (route_it == uid_to_gateway_route_.end()) {
+            fallback_uids.insert(fallback_uids.end(), uids.begin(), uids.end());
+            continue;
+        }
+
+        auto session = FindSessionByRoute(route_it->second);
+        if (!session) {
+            fallback_uids.insert(fallback_uids.end(), uids.begin(), uids.end());
+            continue;
+        }
+
+        auto packet = BuildGameToGatewayEnvelope(task, uids);
+        if (!packet) {
+            spdlog::error("send to sticky gateway link {} failed: build envelope failed",
+                          link_id);
+            continue;
+        }
+
+        session->PostSend(std::move(packet));
+    }
+
+    if (!fallback_uids.empty()) {
+        auto session = SelectAvailableSession();
+        if (!session) {
+            spdlog::error("fallback send to gateway failed: no available gateway link");
+            return;
+        }
+
+        auto packet = BuildGameToGatewayEnvelope(task, fallback_uids);
+        if (!packet) {
+            spdlog::error("fallback send to gateway failed: build envelope failed");
+            return;
+        }
+
+        spdlog::warn("fallback send {} target uid(s) without sticky gateway route",
+                     fallback_uids.size());
+        session->PostSend(std::move(packet));
+    }
 }
 
 ShardId NetworkShard::PickLogicShard() {
@@ -385,6 +472,36 @@ void NetworkShard::BindUidToLogicShard(Uid uid, ShardId shard_id) {
 
 void NetworkShard::UnbindUid(Uid uid) {
     uid_to_logic_shard_.erase(uid);
+    uid_to_gateway_route_.erase(uid);
+}
+
+void NetworkShard::BindUidToGatewayLink(Uid uid, LinkId link_id) {
+    if (link_id >= slots_.size()) {
+        return;
+    }
+
+    const auto& slot = slots_[link_id];
+    if (slot.state != SlotState::Connected ||
+        !slot.session ||
+        !slot.session->IsAvailable()) {
+        return;
+    }
+
+    uid_to_gateway_route_[uid] = GatewayRoute {
+        link_id,
+        slot.generation,
+    };
+}
+
+void NetworkShard::UnbindGatewayLink(std::size_t slot_id, std::uint64_t generation) {
+    for (auto it = uid_to_gateway_route_.begin(); it != uid_to_gateway_route_.end();) {
+        const auto& route = it->second;
+        if (route.link_id == slot_id && route.generation == generation) {
+            it = uid_to_gateway_route_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 Uid NetworkShard::ParseUid(const std::shared_ptr<const RecvNode>& body) {
@@ -404,7 +521,9 @@ Uid NetworkShard::ParseUid(const std::shared_ptr<const RecvNode>& body) {
     return envelope.uid();
 }
 
-std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(const NetworkTask& task) {
+std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(
+    const NetworkTask& task,
+    const std::vector<Uid>& target_uids) const {
     // TODO:
     // 构造 GameToGatewayEnvelope:
     //
@@ -416,7 +535,7 @@ std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(const Network
     //
     // 如果 task.body 已经是完整可发包，可以第一版直接返回。
     rts::v1::GameToGateEnvelope envelope;
-    for (auto uid : task.target_uids) {
+    for (auto uid : target_uids) {
         envelope.add_target_uids(uid);
     }
     envelope.set_inner_msg_id(static_cast<std::uint16_t>(task.msg_id));

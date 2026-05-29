@@ -26,6 +26,11 @@ struct GatewayLinkSlot {
     std::shared_ptr<GatewayLinkSession> session;
 };
 
+struct GatewayRoute {
+    LinkId link_id {};
+    std::uint64_t generation {};
+};
+
 class NetworkShard {
 public:
     NetworkShard(GameServer* server,
@@ -68,14 +73,19 @@ private:
 
     std::optional<std::size_t> FindAvailableSlot() const;
     std::shared_ptr<GatewayLinkSession> SelectAvailableSession();
+    std::shared_ptr<GatewayLinkSession> FindSessionByRoute(const GatewayRoute& route) const;
 
     ShardId PickLogicShard();
     std::optional<ShardId> FindLogicShard(Uid uid) const;
     void BindUidToLogicShard(Uid uid, ShardId shard_id);
     void UnbindUid(Uid uid);
+    void BindUidToGatewayLink(Uid uid, LinkId link_id);
+    void UnbindGatewayLink(std::size_t slot_id, std::uint64_t generation);
 
     Uid ParseUid(const std::shared_ptr<const RecvNode>& body);
-    std::shared_ptr<SendNode> BuildGameToGatewayEnvelope(const NetworkTask& task);
+    std::shared_ptr<SendNode> BuildGameToGatewayEnvelope(
+        const NetworkTask& task,
+        const std::vector<Uid>& target_uids) const;
 
 private:
     GameServer* server_ {};
@@ -86,6 +96,7 @@ private:
     std::size_t next_logic_idx_ {0};
 
     std::unordered_map<Uid, ShardId> uid_to_logic_shard_;
+    std::unordered_map<Uid, GatewayRoute> uid_to_gateway_route_;
 
     bool stopping_ {false};
 };
