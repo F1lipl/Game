@@ -38,29 +38,7 @@ public:
     bool is_connectd() const{
         return state_==Session_state::Conected;
     }
-    void close(){
-        if (state_== Session_state::Closing ||
-        state_ == Session_state::Closed) {
-        return;
-        }
-        Set_state(Session_state::Closing);
-        spdlog::info("sockset {} is closing",uuid_);
-        timer_.cancel();
-        boost::system::error_code ec;
-        socket_.cancel(ec);
-        if(ec){
-            spdlog::error("session {} cancel error {}",uuid_,ec.message());
-        }
-        ec.clear();
-        socket_.close(ec);
-        if(ec){
-            spdlog::error("session {} close error {}",uuid_,ec.message());
-        }
-        Set_state(Session_state::Closed);
-        shard_->delete_uid(uid_);
-        shard_->delete_user_session(uuid_);
-        spdlog::info("session {} is closed",uuid_);
-    }
+    void close();
     void start();
     //to do post_to_queue 逻辑层调用，把解析的包回给队列里
     std::string get_uuid() const {
@@ -72,12 +50,7 @@ public:
     std::uint64_t get_session_id() const {
         return static_cast<std::uint64_t>(std::hash<std::string>{}(uuid_));
     }
-    void BindUid(uid id) {
-        uid_ = id;
-        if (shard_) {
-            shard_->add_uid(id, uuid_);
-        }
-    }
+    void BindUid(uid id);
     void SendData(std::shared_ptr<SendNode>);
 
 private:

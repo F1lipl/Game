@@ -114,6 +114,7 @@ add_library(GateServerLib STATIC
     GateServer/source/ClientSession.cc
     GateServer/source/Cserver.cc
     GateServer/source/Csession.cc
+    GateServer/source/GateSessionRegistry.cc
     GateServer/source/GateProtocol.cc
     GateServer/source/GameServerConnPool.cc
     GateServer/source/LogicRouter.cc

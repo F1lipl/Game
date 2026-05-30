@@ -1,5 +1,6 @@
 #include"../include/WorkShard.h"
 #include "../include/Csession.h"
+#include "../include/GateSessionRegistry.h"
 #include "../include/GameServerConnPool.h"
 #include <memory>
 #include <thread>
@@ -47,13 +48,17 @@ void WorkShard::PostMessage(std::shared_ptr<SendNode>node){
 }
 
 bool WorkShard::SendToUid(uid id, std::shared_ptr<SendNode> node) {
-    auto session = FindSessionByUid(id);
-    if (!session || !node) {
+    if (!node) {
         return false;
     }
 
-    session->SendData(std::move(node));
-    return true;
+    auto session = FindSessionByUid(id);
+    if (session) {
+        session->SendData(std::move(node));
+        return true;
+    }
+
+    return GateSessionRegistry::Instance().SendToUid(id, std::move(node));
 }
 
 std::size_t WorkShard::Broadcast(std::shared_ptr<SendNode> node) {
@@ -61,17 +66,7 @@ std::size_t WorkShard::Broadcast(std::shared_ptr<SendNode> node) {
         return 0;
     }
 
-    std::size_t sent = 0;
-    for (auto& [uuid, session] : user_session_mgr) {
-        if (!session) {
-            continue;
-        }
-
-        session->SendData(node);
-        ++sent;
-    }
-
-    return sent;
+    return GateSessionRegistry::Instance().Broadcast(std::move(node));
 }
 
 std::shared_ptr<Csession> WorkShard::FindSessionByUid(uid id) {

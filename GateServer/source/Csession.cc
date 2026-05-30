@@ -1,4 +1,5 @@
 #include "../include/Csession.h"
+#include "../include/GateSessionRegistry.h"
 #include <boost/asio.hpp>
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -42,6 +43,67 @@ Csession::Csession(WorkShard* shard, boost::asio::io_context& ioc)
 
 Csession::~Csession() {
     delete[] buffer_;
+}
+
+void Csession::close() {
+    if (state_ == Session_state::Closing ||
+        state_ == Session_state::Closed) {
+        return;
+    }
+
+    Set_state(Session_state::Closing);
+    spdlog::info("sockset {} is closing", uuid_);
+
+    const auto current_uid = uid_;
+    const auto current_session_id = get_session_id();
+    GateSessionRegistry::Instance().Unregister(current_uid, current_session_id);
+
+    boost::system::error_code ec;
+    timer_.cancel(ec);
+    if (ec) {
+        spdlog::error("session {} timer cancel error {}", uuid_, ec.message());
+    }
+
+    ec.clear();
+    socket_.cancel(ec);
+    if (ec) {
+        spdlog::error("session {} cancel error {}", uuid_, ec.message());
+    }
+
+    ec.clear();
+    socket_.close(ec);
+    if (ec) {
+        spdlog::error("session {} close error {}", uuid_, ec.message());
+    }
+
+    Set_state(Session_state::Closed);
+    if (shard_) {
+        shard_->delete_uid(current_uid);
+        shard_->delete_user_session(uuid_);
+    }
+
+    spdlog::info("session {} is closed", uuid_);
+}
+
+void Csession::BindUid(uid id) {
+    if (id == 0) {
+        return;
+    }
+
+    const auto current_session_id = get_session_id();
+    if (uid_ != 0 && uid_ != id) {
+        GateSessionRegistry::Instance().Unregister(uid_, current_session_id);
+        if (shard_) {
+            shard_->delete_uid(uid_);
+        }
+    }
+
+    uid_ = id;
+    if (shard_) {
+        shard_->add_uid(id, uuid_);
+    }
+
+    GateSessionRegistry::Instance().Register(id, shard_, shared_from_this());
 }
 
 void Csession::start() {
