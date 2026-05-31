@@ -36,7 +36,7 @@ private:
     char* buffer_;
     uint8_t state_;
     //消息头缓冲区，消息缓冲区
-    std::shared_ptr<MsgNode>head_;
+    std::shared_ptr<RecvNode>head_;
     std::shared_ptr<RecvNode>body_;
     
     //由于Csession也会用socket发信息，所以完了保证并发不会出错，必须用strand_限制每次都只能有一个协程去修改send_que_;
