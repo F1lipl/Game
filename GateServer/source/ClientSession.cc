@@ -5,6 +5,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <chrono>
@@ -45,6 +46,8 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
         !ini.Load("../config/config.ini", &err) &&
         !ini.Load("/home/cmr/workspace/project/Gamer/config/config.ini", &err)) {
         spdlog::error("client session load config.ini err {}", err);
+        state_ = ClientSession_state::Error;
+        close();
         co_return;
     }
 
@@ -56,6 +59,8 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
 
         if (port_value < 0 || port_value > 65535) {
             spdlog::error("invalid port: {}", port_value);
+            state_ = ClientSession_state::Error;
+            close();
             co_return;
         }
 
@@ -65,10 +70,42 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
             static_cast<unsigned short>(port_value)
         );
 
-        co_await socket_.async_connect(ep, boost::asio::use_awaitable);
+        auto self = shared_from_this();
+        timer_.expires_after(std::chrono::seconds(5));
+        timer_.async_wait([self, ip, port_value](const boost::system::error_code& ec) {
+            if (ec || self->state_ != ClientSession_state::Connecting) {
+                return;
+            }
+
+            spdlog::warn("connect to {}:{} timeout", ip, port_value);
+            self->close();
+        });
+
+        boost::system::error_code connect_ec;
+        co_await socket_.async_connect(
+            ep,
+            boost::asio::redirect_error(boost::asio::use_awaitable, connect_ec));
+
+        boost::system::error_code cancel_ec;
+        timer_.cancel(cancel_ec);
+
+        if (connect_ec) {
+            if (state_ != ClientSession_state::closing &&
+                state_ != ClientSession_state::closed) {
+                spdlog::warn("connect to {}:{} failed: {}", ip, port_value, connect_ec.message());
+                state_ = ClientSession_state::Error;
+                close();
+            }
+            co_return;
+        }
+
+        if (state_ == ClientSession_state::closing ||
+            state_ == ClientSession_state::closed) {
+            co_return;
+        }
+
         state_ = ClientSession_state::Connected;
         last_recv_time_ = std::chrono::steady_clock::now();
-        auto self = shared_from_this();
         boost::asio::co_spawn(
             socket_.get_executor(),
             [self]() -> boost::asio::awaitable<void> {
@@ -81,9 +118,14 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
                 co_await self->keep_alive();
             },
             boost::asio::detached);
-        spdlog::info("connect to {}:{} success", ip, port_value);
+        spdlog::debug("connect to {}:{} success", ip, port_value);
     } catch (const std::exception& e) {
         spdlog::error("handleconnect exception: {}", e.what());
+        if (state_ != ClientSession_state::closing &&
+            state_ != ClientSession_state::closed) {
+            state_ = ClientSession_state::Error;
+            close();
+        }
     }
 }
 
@@ -154,7 +196,6 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
 // }
 
 boost::asio::awaitable<void> ClientSession::keep_alive() {
-    auto self=shared_from_this();
     boost::system::error_code ec;
     while (true) {
         co_await boost::asio::dispatch(socket_.get_executor(), boost::asio::use_awaitable);
@@ -188,8 +229,6 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
             boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
         if (ec == boost::asio::error::operation_aborted) {
-            spdlog::info("timer canceled, keep-alive exit");
-            close();
             co_return;
         }
         if (ec) {
@@ -198,14 +237,8 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
             co_return;
         }
 
-        auto now = std::chrono::steady_clock::now();
-        if (now - last_recv_time_ > std::chrono::seconds(15)) {
-            state_=ClientSession_state::Timeout;
-            close();
-            co_return;
-        }
-        //
-        // 如果协议要求主动发心跳包，这里发送
+        // GateServer -> GameServer 目前没有实现 Ping/Pong。
+        // 空闲时不主动关闭连接，避免没有客户端消息时循环断开重连。
     }
 }
 

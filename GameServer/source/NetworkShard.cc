@@ -93,7 +93,7 @@ std::shared_ptr<GatewayLinkSession> NetworkShard::CreateAcceptSession() {
 
     auto slot_idx = FindAvailableSlot();
     if (!slot_idx.has_value()) {
-        spdlog::warn("create gateway link session failed: no free slot");
+        spdlog::debug("create gateway link session skipped: no free slot");
         return nullptr;
     }
 
@@ -128,7 +128,7 @@ void NetworkShard::OnAcceptSuccess(std::size_t slot_id, std::uint64_t generation
     slot.state = SlotState::Connected;
     slot.session->Start();
 
-    spdlog::info("gateway link slot {} accept success", slot_id);
+    spdlog::debug("gateway link slot {} accept success", slot_id);
 }
 
 void NetworkShard::OnAcceptFailed(std::size_t slot_id, std::uint64_t generation) {

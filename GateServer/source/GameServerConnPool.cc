@@ -64,6 +64,17 @@ bool GameServerConnPool::IsConnAvailable(const ConnPtr& conn) const {
            state == ClientSession_state::Busy;
 }
 
+bool GameServerConnPool::IsConnPendingOrAvailable(const ConnPtr& conn) const {
+    if (!conn) {
+        return false;
+    }
+
+    auto state = conn->get_state();
+    return state == ClientSession_state::Connecting ||
+           state == ClientSession_state::Connected ||
+           state == ClientSession_state::Busy;
+}
+
 GameServerConnPool::ConnPtr GameServerConnPool::SelectConnUnsafe() {
     if (sessions_.empty()) {
         return nullptr;
@@ -125,8 +136,12 @@ boost::asio::awaitable<void> GameServerConnPool::detection() {
         }
 
         for (std::size_t i = 0; i < conn_cnt_; ++i) {
-            if (IsConnAvailable(sessions_[i])) {
+            if (IsConnPendingOrAvailable(sessions_[i])) {
                 continue;
+            }
+
+            if (sessions_[i]) {
+                sessions_[i]->close();
             }
 
             auto new_conn = CreateConn();
@@ -136,7 +151,7 @@ boost::asio::awaitable<void> GameServerConnPool::detection() {
             }
 
             sessions_[i] = new_conn;
-            spdlog::info("GameServerConnPool rebuild slot {} success", i);
+            spdlog::debug("GameServerConnPool rebuild slot {} scheduled", i);
         }
     }
 }

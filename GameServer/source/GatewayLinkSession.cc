@@ -151,28 +151,9 @@ boost::asio::awaitable<void> GatewayLinkSession::handle_read() {
 }
 
 boost::asio::awaitable<void> GatewayLinkSession::start_heartbeat() {
-    boost::system::error_code ec;
-
-    while (!is_closing() && state_ != Session_state::Closed) {
-        timer_.expires_after(HEART_TIMEOUT);
-        ec.clear();
-
-        co_await timer_.async_wait(
-            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-
-        if (ec == boost::asio::error::operation_aborted) {
-            continue;
-        }
-
-        if (ec) {
-            spdlog::error("gateway link session {} heartbeat error {}", uuid_, ec.message());
-            continue;
-        }
-
-        spdlog::warn("gateway link session {} heartbeat timeout", uuid_);
-        Close();
-        co_return;
-    }
+    // Gate links do not send protocol heartbeats yet. Keep idle backend links open
+    // until Ping/Pong or GateLinkHello handling is implemented.
+    co_return;
 }
 
 boost::asio::awaitable<std::size_t> GatewayLinkSession::ReadHead() {
