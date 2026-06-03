@@ -19,7 +19,7 @@ void GameServerConnPool::Init() {
     sessions_.resize(conn_cnt_);
 
     for (std::size_t i = 0; i < conn_cnt_; ++i) {
-        auto conn = CreateConn();
+        auto conn = CreateConn(i);
         sessions_[i] = conn;
 
         if (!conn) {
@@ -48,8 +48,11 @@ void GameServerConnPool::Stop() {
     initialized_ = false;
 }
 
-GameServerConnPool::ConnPtr GameServerConnPool::CreateConn() {
-    auto conn = std::make_shared<ClientSession>(ioc_, shard_);
+GameServerConnPool::ConnPtr GameServerConnPool::CreateConn(std::size_t slot_index) {
+    auto conn = std::make_shared<ClientSession>(
+        ioc_,
+        shard_,
+        static_cast<std::uint32_t>(slot_index));
     conn->start();
     return conn;
 }
@@ -144,7 +147,7 @@ boost::asio::awaitable<void> GameServerConnPool::detection() {
                 sessions_[i]->close();
             }
 
-            auto new_conn = CreateConn();
+            auto new_conn = CreateConn(i);
             if (!new_conn) {
                 spdlog::warn("GameServerConnPool rebuild slot {} failed", i);
                 continue;

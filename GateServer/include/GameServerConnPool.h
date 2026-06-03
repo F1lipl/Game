@@ -24,7 +24,7 @@ public:
     ConnPtr GetAvailableConn();
 
 private:
-    ConnPtr CreateConn();
+    ConnPtr CreateConn(std::size_t slot_index);
     bool IsConnAvailable(const ConnPtr& conn) const;
     bool IsConnPendingOrAvailable(const ConnPtr& conn) const;
     ConnPtr SelectConnUnsafe();

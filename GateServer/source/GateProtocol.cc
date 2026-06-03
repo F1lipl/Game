@@ -56,6 +56,36 @@ std::shared_ptr<SendNode> BuildPacket(std::uint16_t msg_id,
         flags);
 }
 
+std::shared_ptr<SendNode> BuildGateLinkHello(std::uint32_t gate_id,
+                                             std::uint32_t link_index) {
+    rts::v1::GateLinkHello hello;
+    hello.set_gate_id(gate_id);
+    hello.set_link_index(link_index);
+
+    std::string payload;
+    if (!SerializeMessage(hello, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::GateLinkHello),
+        payload);
+}
+
+std::shared_ptr<SendNode> BuildPingReq(std::uint64_t client_time_ms) {
+    rts::v1::PingReq ping;
+    ping.set_client_time_ms(client_time_ms);
+
+    std::string payload;
+    if (!SerializeMessage(ping, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::PingReq),
+        payload);
+}
+
 std::shared_ptr<SendNode> BuildGateToGameEnvelope(const Csession& session,
                                                   std::uint16_t inner_msg_id,
                                                   const RecvNode& body) {

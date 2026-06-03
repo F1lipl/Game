@@ -6,6 +6,7 @@
 #include <boost/asio/post.hpp>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -34,6 +35,22 @@ bool ParseGateToGameEnvelope(const std::shared_ptr<const RecvNode>& body,
     }
 
     return true;
+}
+
+std::uint64_t NowUnixMs() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+std::shared_ptr<SendNode> BuildPacket(MsgId msg_id,
+                                      const std::string& payload,
+                                      std::uint16_t flags = rts::protocol::kPacketFlagNone) {
+    return std::make_shared<SendNode>(
+        payload.empty() ? nullptr : payload.data(),
+        static_cast<std::uint32_t>(payload.size()),
+        static_cast<std::uint16_t>(msg_id),
+        flags);
 }
 
 std::string ExtractPacketPayload(const std::shared_ptr<SendNode>& packet) {
@@ -243,6 +260,14 @@ void NetworkShard::OnPacket(LinkId link_id,
     }
 
     switch (dispatch_msg_id) {
+    case MsgId::GateLinkHello:
+        HandleGateLinkHello(link_id, std::move(body));
+        break;
+
+    case MsgId::PingReq:
+        HandlePingReq(link_id, std::move(body));
+        break;
+
     case MsgId::CreateRoomReq:
     case MsgId::JoinRoomReq:
     case MsgId::LeaveRoomReq:
@@ -268,6 +293,55 @@ void NetworkShard::OnPacket(LinkId link_id,
         spdlog::warn("unknown msg_id {}", static_cast<std::uint16_t>(dispatch_msg_id));
         break;
     }
+}
+
+void NetworkShard::HandleGateLinkHello(LinkId link_id,
+                                       std::shared_ptr<const RecvNode> body) {
+    rts::v1::GateLinkHello hello;
+    if (!rts::protocol::ParseProtoFromBytes(BodyView(body), hello)) {
+        spdlog::warn("parse GateLinkHello failed on link {}", link_id);
+        return;
+    }
+
+    spdlog::debug("gate link hello received, link={}, gate_id={}, link_index={}",
+                  link_id, hello.gate_id(), hello.link_index());
+}
+
+void NetworkShard::HandlePingReq(LinkId link_id,
+                                 std::shared_ptr<const RecvNode> body) {
+    rts::v1::PingReq ping;
+    if (!rts::protocol::ParseProtoFromBytes(BodyView(body), ping)) {
+        spdlog::warn("parse PingReq failed on link {}", link_id);
+        return;
+    }
+
+    rts::v1::PongRsp pong;
+    pong.set_client_time_ms(ping.client_time_ms());
+    pong.set_server_time_ms(NowUnixMs());
+
+    std::string payload;
+    if (!rts::protocol::SerializeProtoToString(pong, payload)) {
+        spdlog::error("serialize PongRsp failed on link {}", link_id);
+        return;
+    }
+
+    SendToGatewayLink(
+        link_id,
+        BuildPacket(MsgId::PongRsp, payload));
+}
+
+void NetworkShard::SendToGatewayLink(LinkId link_id, std::shared_ptr<SendNode> packet) {
+    if (!packet || link_id >= slots_.size()) {
+        return;
+    }
+
+    auto& slot = slots_[link_id];
+    if (slot.state != SlotState::Connected || !slot.session || !slot.session->IsAvailable()) {
+        spdlog::warn("send to gateway link {} failed: unavailable", link_id);
+        return;
+    }
+
+    slot.session->PostSend(std::move(packet));
 }
 
 void NetworkShard::HandleRoomLifecycle(LinkId link_id,

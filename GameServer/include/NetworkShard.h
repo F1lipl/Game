@@ -71,6 +71,14 @@ private:
                            SeqId seq,
                            std::shared_ptr<const RecvNode> body);
 
+    void HandleGateLinkHello(LinkId link_id,
+                             std::shared_ptr<const RecvNode> body);
+
+    void HandlePingReq(LinkId link_id,
+                       std::shared_ptr<const RecvNode> body);
+
+    void SendToGatewayLink(LinkId link_id, std::shared_ptr<SendNode> packet);
+
     std::optional<std::size_t> FindAvailableSlot() const;
     std::shared_ptr<GatewayLinkSession> SelectAvailableSession();
     std::shared_ptr<GatewayLinkSession> FindSessionByRoute(const GatewayRoute& route) const;
