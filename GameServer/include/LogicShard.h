@@ -10,6 +10,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -30,7 +31,7 @@ enum ErrorCode : int;
 class LogicShard{
 
 public:
-    LogicShard(GameServer*);
+    LogicShard(GameServer*, ShardId shard_id, std::size_t shard_count);
     void start();
     void stop();
     void postTask(LogicTask);
@@ -77,4 +78,6 @@ private:
     std::uint64_t next_room_id_ {1};
     std::atomic<bool>b_stop_;
     GameServer* server_;
+    ShardId shard_id_ {};
+    std::size_t shard_count_ {1};
 };

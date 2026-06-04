@@ -115,10 +115,12 @@ void FillUnitSnapshot(rts::v1::UnitStateSnapshot& out, const Unit& u) {
 } // namespace
 
 
-LogicShard::LogicShard(GameServer* server)
+LogicShard::LogicShard(GameServer* server, ShardId shard_id, std::size_t shard_count)
     : tick_timer_(ioc_),
       b_stop_(false),
-      server_(server) {}
+      server_(server),
+      shard_id_(shard_id),
+      shard_count_(shard_count == 0 ? 1 : shard_count) {}
 
 void LogicShard::start() {
     if (thread_.joinable()) {
@@ -434,7 +436,11 @@ void LogicShard::HandleCreateRoom(LogicTask task) {
         return;
     }
 
-    const auto room_id = next_room_id_++;
+    // room_id 落在本 shard 的同余类: room_id % shard_count == shard_id_
+    // 这样任何带 room_id 的消息都能路由回房间所在的 shard
+    const auto room_id =
+        static_cast<std::uint64_t>(shard_id_) + shard_count_ * next_room_id_;
+    ++next_room_id_;
     auto room_name = req.room_name().empty()
         ? "room-" + std::to_string(room_id)
         : req.room_name();

@@ -418,3 +418,9 @@ message ClientDisconnectedNtf {
   uint64 session_id = 2;
   string reason = 3;
 }
+
+// 仅供 GameServer 内部按 room_id 做逻辑分片路由:
+// room_id 是所有房间相关消息的 field 1, 解析这个就能拿到 room_id 而无需关心具体类型
+message RoomRouteHint {
+  uint64 room_id = 1;
+}

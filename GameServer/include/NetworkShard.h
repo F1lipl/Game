@@ -11,6 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace rts::v1 {
+class GateToGameEnvelope;
+}
+
 enum class SlotState {
     Empty,
     Accepting,
@@ -84,6 +88,9 @@ private:
     std::shared_ptr<GatewayLinkSession> FindSessionByRoute(const GatewayRoute& route) const;
 
     ShardId PickLogicShard();
+    ShardId ResolveLogicShard(MsgId msg_id,
+                              Uid uid,
+                              const rts::v1::GateToGameEnvelope& envelope);
     std::optional<ShardId> FindLogicShard(Uid uid) const;
     void BindUidToLogicShard(Uid uid, ShardId shard_id);
     void UnbindUid(Uid uid);

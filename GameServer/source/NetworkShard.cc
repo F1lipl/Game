@@ -348,7 +348,13 @@ void NetworkShard::HandleRoomLifecycle(LinkId link_id,
                                        MsgId msg_id,
                                        SeqId seq,
                                        std::shared_ptr<const RecvNode> body) {
-    auto uid = ParseUid(body);
+    rts::v1::GateToGameEnvelope envelope;
+    if (!ParseGateToGameEnvelope(body, envelope)) {
+        spdlog::warn("room lifecycle failed: parse envelope");
+        return;
+    }
+
+    const auto uid = envelope.uid();
     if (uid == 0) {
         spdlog::warn("room lifecycle failed: invalid uid");
         return;
@@ -359,11 +365,7 @@ void NetworkShard::HandleRoomLifecycle(LinkId link_id,
         return;
     }
 
-    auto logic_shard_id = FindLogicShard(uid).value_or(0);
-    if (logic_shard_id >= server_->LogicShardCount()) {
-        logic_shard_id = 0;
-    }
-
+    const auto logic_shard_id = ResolveLogicShard(msg_id, uid, envelope);
     BindUidToLogicShard(uid, logic_shard_id);
     BindUidToGatewayLink(uid, link_id);
 
@@ -404,18 +406,25 @@ void NetworkShard::HandlePlayerInput(LinkId link_id,
                                      MsgId msg_id,
                                      SeqId seq,
                                      std::shared_ptr<const RecvNode> body) {
-    auto uid = ParseUid(body);
+    rts::v1::GateToGameEnvelope envelope;
+    if (!ParseGateToGameEnvelope(body, envelope)) {
+        spdlog::warn("player input failed: parse envelope");
+        return;
+    }
+
+    const auto uid = envelope.uid();
     if (uid == 0) {
         spdlog::warn("player input failed: invalid uid");
         return;
     }
 
-    auto logic_shard_id = FindLogicShard(uid);
-    if (!logic_shard_id.has_value()) {
-        spdlog::warn("player input failed: uid {} has no logic shard", uid);
+    if (!server_ || server_->LogicShardCount() == 0) {
+        spdlog::warn("player input failed: no logic shard");
         return;
     }
 
+    const auto logic_shard_id = ResolveLogicShard(msg_id, uid, envelope);
+    BindUidToLogicShard(uid, logic_shard_id);
     BindUidToGatewayLink(uid, link_id);
 
     LogicTask task;
@@ -424,7 +433,7 @@ void NetworkShard::HandlePlayerInput(LinkId link_id,
     task.seq = seq;
     task.body = std::move(body);
 
-    server_->PostToLogic(*logic_shard_id, std::move(task));
+    server_->PostToLogic(logic_shard_id, std::move(task));
 }
 
 void NetworkShard::PostTask(NetworkTask task) {
@@ -529,6 +538,42 @@ ShardId NetworkShard::PickLogicShard() {
 
     const auto id = next_logic_idx_++ % count;
     return static_cast<ShardId>(id);
+}
+
+// 逻辑分片路由:
+// - CreateRoomReq 还没有 room_id, 用轮询挑一个 shard;
+//   该 shard 生成的 room_id 会落在自己的同余类里 (room_id % count == shard_id)
+// - 其它房间消息按 room_id % count 路由, 保证房间和它所有成员落在同一 shard
+// - room_id 拿不到时回退到已有的 uid->shard 绑定
+ShardId NetworkShard::ResolveLogicShard(MsgId msg_id,
+                                        Uid uid,
+                                        const rts::v1::GateToGameEnvelope& envelope) {
+    if (!server_) {
+        return 0;
+    }
+
+    const auto count = server_->LogicShardCount();
+    if (count == 0) {
+        return 0;
+    }
+
+    if (msg_id == MsgId::CreateRoomReq) {
+        return PickLogicShard();
+    }
+
+    std::uint64_t room_id = envelope.room_id();
+    if (room_id == 0) {
+        rts::v1::RoomRouteHint hint;
+        if (rts::protocol::ParseProtoFromBytes(envelope.payload(), hint)) {
+            room_id = hint.room_id();
+        }
+    }
+
+    if (room_id != 0) {
+        return static_cast<ShardId>(room_id % count);
+    }
+
+    return FindLogicShard(uid).value_or(0);
 }
 
 std::optional<ShardId> NetworkShard::FindLogicShard(Uid uid) const {
