@@ -69,6 +69,7 @@ private:
                              const std::string& reason);
     void BroadcastRoomState(const DungeonRoom& room);
     void BroadcastGameStart(const DungeonRoom& room);
+    void BroadcastGameOver(const DungeonRoom& room, std::uint32_t winner_team);
 
     std::thread thread_;
     boost::asio::io_context ioc_;

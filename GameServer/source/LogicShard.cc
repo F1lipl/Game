@@ -211,20 +211,27 @@ boost::asio::awaitable<void> LogicShard::TickLoop() {
 
 void LogicShard::TickRooms() {
     for (auto& [room_id, room] : rooms_) {
-        if (!room.Started()) {
+        if (!room.Started() || room.IsGameOver()) {
             continue;
         }
 
         room.ApplyPending();   // 应用本帧攒下的输入
-        room.Step(kTickSeconds); // 推进仿真一步
+        room.Step(kTickSeconds); // 推进仿真一步: 移动/追击/攻击/死亡
 
         const auto server_tick = room.NextServerTick();
         if (server_tick % kFullSnapshotInterval == 0) {
             SendFullSnapshot(room);
         } else {
-            SendDelta(room);
+            SendDelta(room); // 含本帧死亡的 EntityDespawnNtf
         }
         room.ClearFrameChanges();
+
+        // 一方团灭则结束
+        std::uint32_t winner_team = 0;
+        if (room.CheckGameOver(winner_team)) {
+            room.SetGameOver(true);
+            BroadcastGameOver(room, winner_team);
+        }
     }
 }
 
@@ -416,6 +423,16 @@ void LogicShard::BroadcastGameStart(const DungeonRoom& room) {
     }
 }
 
+void LogicShard::BroadcastGameOver(const DungeonRoom& room, std::uint32_t winner_team) {
+    rts::v1::GameOverNtf ntf;
+    ntf.set_room_id(room.RoomId());
+    ntf.set_server_tick(room.ServerTick());
+    ntf.set_winner(ToProtoTeam(winner_team));
+
+    SendToPlayers(MsgId::GameOverNtf, room.PlayerUids(), ntf, room.ServerTick());
+    spdlog::info("room {} game over, winner team {}", room.RoomId(), winner_team);
+}
+
 void LogicShard::HandleCreateRoom(LogicTask task) {
     rts::v1::CreateRoomRsp rsp;
 
@@ -584,6 +601,7 @@ void LogicShard::HandlePlayerReady(LogicTask task) {
 
         // 服务器权威地生成初始单位, 并下发一帧全量做 baseline
         SpawnInitialUnits(room);
+        room.BeginBattle();
         SendFullSnapshot(room);
         room.ClearFrameChanges();
     }
@@ -715,6 +733,25 @@ void LogicShard::HandlePlayerCommand(LogicTask task) {
         pending.owner_uid = task.uid;
         pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
                                 cmd.actor_unit_ids().end());
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::AttackCmd: {
+        rts::v1::AttackCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid AttackCmd");
+            return;
+        }
+
+        PendingCommand pending;
+        pending.type = CommandType::Attack;
+        pending.owner_uid = task.uid;
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        if (cmd.has_target()) {
+            pending.target_entity = cmd.target().id();
+        }
         room.EnqueueCommand(std::move(pending));
         break;
     }

@@ -3,6 +3,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 using Catch::Approx;
 
 namespace {
@@ -17,6 +19,22 @@ PendingCommand MakeMove(std::uint64_t owner,
     cmd.target.x = x;
     cmd.target.z = z;
     return cmd;
+}
+
+PendingCommand MakeAttack(std::uint64_t owner,
+                          std::vector<std::uint64_t> ids,
+                          std::uint64_t target_entity) {
+    PendingCommand cmd;
+    cmd.type = CommandType::Attack;
+    cmd.owner_uid = owner;
+    cmd.unit_ids = std::move(ids);
+    cmd.target_entity = target_entity;
+    return cmd;
+}
+
+bool DespawnedContains(const DungeonRoom& room, std::uint64_t id) {
+    const auto& d = room.Despawned();
+    return std::find(d.begin(), d.end(), id) != d.end();
 }
 
 } // namespace
@@ -151,4 +169,83 @@ TEST_CASE("Stop command clears the target") {
 
     REQUIRE_FALSE(room.FindUnit(id)->has_target);
     REQUIRE(room.FindUnit(id)->state == 0);
+}
+
+TEST_CASE("Attack in range deals damage and respects cooldown") {
+    DungeonRoom room(1, "r", 2);
+    const auto a = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto b = room.SpawnUnit(200, 1, 0, Vec3f{1.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+
+    room.EnqueueCommand(MakeAttack(100, {a}, b));
+    room.ApplyPending();
+
+    // in range (dist 1 < 2): first tick lands a hit
+    room.Step(0.1f);
+    REQUIRE(room.FindUnit(b)->hp == Approx(100.0f - kAttackDamage));
+    REQUIRE(room.FindUnit(a)->state == 3); // attacking
+
+    // cooldown not yet elapsed -> no further damage
+    room.Step(0.1f);
+    REQUIRE(room.FindUnit(b)->hp == Approx(100.0f - kAttackDamage));
+}
+
+TEST_CASE("Out-of-range attacker chases the target") {
+    DungeonRoom room(1, "r", 2);
+    const auto a = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto b = room.SpawnUnit(200, 1, 0, Vec3f{10.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+
+    room.EnqueueCommand(MakeAttack(100, {a}, b));
+    room.ApplyPending();
+
+    room.Step(0.1f); // speed 10, dt 0.1 -> moves 1.0 toward target, no damage
+    REQUIRE(room.FindUnit(a)->pos.x == Approx(1.0f));
+    REQUIRE(room.FindUnit(b)->hp == Approx(100.0f));
+    REQUIRE(room.FindUnit(a)->state == 3);
+}
+
+TEST_CASE("A unit dies and is despawned when hp is depleted") {
+    DungeonRoom room(1, "r", 2);
+    const auto a = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto b = room.SpawnUnit(200, 1, 0, Vec3f{1.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+
+    room.EnqueueCommand(MakeAttack(100, {a}, b));
+    room.ApplyPending();
+
+    // dt 1.0 fully consumes the 1.0s cooldown each tick -> 20 dmg/tick, 5 ticks to kill
+    for (int i = 0; i < 5; ++i) {
+        room.Step(1.0f);
+    }
+
+    REQUIRE(room.FindUnit(b) == nullptr);
+    REQUIRE(DespawnedContains(room, b));
+    REQUIRE(room.Units().size() == 1);
+}
+
+TEST_CASE("Game over fires when one team is eliminated") {
+    DungeonRoom room(1, "r", 2);
+    const auto a = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto b = room.SpawnUnit(200, 1, 0, Vec3f{1.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    std::uint32_t winner = 99;
+    REQUIRE_FALSE(room.CheckGameOver(winner)); // both teams alive
+
+    room.EnqueueCommand(MakeAttack(100, {a}, b));
+    room.ApplyPending();
+    for (int i = 0; i < 5; ++i) {
+        room.Step(1.0f);
+    }
+
+    REQUIRE(room.CheckGameOver(winner));
+    REQUIRE(winner == 0); // team 0 (unit a) survives
+}
+
+TEST_CASE("Single-team room never declares game over") {
+    DungeonRoom room(1, "r", 2);
+    room.SpawnUnit(100, 0, 0, Vec3f{}, 100.0f, 10.0f);
+    room.SpawnUnit(100, 0, 0, Vec3f{}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    std::uint32_t winner = 99;
+    REQUIRE_FALSE(room.CheckGameOver(winner));
 }
