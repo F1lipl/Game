@@ -20,6 +20,7 @@
 
 #include <boost/asio.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -42,6 +43,15 @@ std::atomic<std::uint64_t> g_sent{0};
 std::atomic<std::uint64_t> g_recv{0};
 std::atomic<std::uint64_t> g_recv_bytes{0};
 std::atomic<bool> g_running{true};
+
+std::mutex g_lat_mtx;
+std::vector<double> g_lat_us; // Ping/Pong round-trip samples (microseconds)
+
+std::uint64_t NowNs() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now().time_since_epoch()).count());
+}
 
 void PutBE16(std::string& b, std::uint16_t v) {
     b.push_back(static_cast<char>((v >> 8) & 0xFF));
@@ -126,6 +136,20 @@ void Reader(Conn& c) {
 
         g_recv.fetch_add(1, std::memory_order_relaxed);
         g_recv_bytes.fetch_add(proto::kPacketHeaderLen + len, std::memory_order_relaxed);
+
+        // Ping/Pong round-trip latency probe (raw PongRsp, not enveloped)
+        if (msg_id == static_cast<std::uint16_t>(proto::MsgId::PongRsp)) {
+            rts::v1::PongRsp pong;
+            if (pong.ParseFromArray(body.data(), static_cast<int>(body.size()))) {
+                const std::uint64_t token = pong.client_time_ms();
+                const std::uint64_t now = NowNs();
+                if (now > token) {
+                    std::lock_guard<std::mutex> lk(g_lat_mtx);
+                    g_lat_us.push_back(static_cast<double>(now - token) / 1000.0);
+                }
+            }
+            continue;
+        }
 
         if (msg_id != static_cast<std::uint16_t>(proto::MsgId::GameToGateEnvelope)) {
             continue;
@@ -233,6 +257,16 @@ void DriveConn(Conn& c, std::uint64_t base_uid, std::size_t rooms,
             SendRaw(c, Envelope(uid, rd.first,
                 static_cast<std::uint16_t>(proto::MsgId::MoveCmd), inner));
         }
+
+        // latency probe: raw PingReq carrying a monotonic token, server echoes it
+        {
+            rts::v1::PingReq ping;
+            ping.set_client_time_ms(NowNs());
+            std::string pb;
+            ping.SerializeToString(&pb);
+            SendRaw(c, Frame(static_cast<std::uint16_t>(proto::MsgId::PingReq), pb));
+        }
+
         std::this_thread::sleep_until(tick_start + std::chrono::milliseconds(move_interval_ms));
     }
 
@@ -310,12 +344,30 @@ int main(int argc, char** argv) {
     const auto recv = g_recv.load();
     const auto bytes = g_recv_bytes.load();
 
+    double avg_ms = 0.0;
+    double p95_ms = 0.0;
+    std::size_t lat_n = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_lat_mtx);
+        lat_n = g_lat_us.size();
+        if (lat_n > 0) {
+            std::sort(g_lat_us.begin(), g_lat_us.end());
+            double sum = 0.0;
+            for (double v : g_lat_us) sum += v;
+            avg_ms = (sum / static_cast<double>(lat_n)) / 1000.0;
+            p95_ms = g_lat_us[static_cast<std::size_t>(0.95 * (lat_n - 1))] / 1000.0;
+        }
+    }
+
     std::cout << "----- results -----\n";
     std::cout << "elapsed             : " << elapsed << " s\n";
     std::cout << "playing rooms       : " << playing << " / " << connections * rooms_per_conn << "\n";
-    std::cout << "commands sent       : " << sent << " (" << sent / elapsed << "/s)\n";
-    std::cout << "server msgs recv    : " << recv << " (" << recv / elapsed << "/s)\n";
+    std::cout << "msgs sent           : " << sent << " (" << sent / elapsed << "/s)\n";
+    std::cout << "msgs recv           : " << recv << " (" << recv / elapsed << "/s)\n";
     std::cout << "recv throughput     : " << (bytes / elapsed) / (1024.0 * 1024.0) << " MiB/s\n";
+    std::cout << "latency samples     : " << lat_n << "\n";
+    std::cout << "avg latency         : " << avg_ms << " ms\n";
+    std::cout << "p95 latency         : " << p95_ms << " ms\n";
     std::cout << "effective tick rate : " << hz << " Hz  (target 20Hz; lower => server behind)\n";
     return 0;
 }
