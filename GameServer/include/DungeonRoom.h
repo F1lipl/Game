@@ -22,6 +22,11 @@ struct Vec3f {
     float z {};
 };
 
+// 战斗参数(单一兵种, 暂用共享常量)
+inline constexpr float kAttackRange = 2.0f;
+inline constexpr float kAttackDamage = 20.0f;
+inline constexpr float kAttackCooldown = 1.0f; // 秒
+
 struct Unit {
     std::uint64_t id {};
     std::uint64_t owner_uid {};
@@ -34,11 +39,14 @@ struct Unit {
     float hp {};
     float speed {};
     std::uint32_t state {}; // 对应 rts::v1::UnitState
+    std::uint64_t attack_target {}; // 攻击目标实体 id, 0 表示无
+    float attack_cd {};             // 距离下次攻击的剩余冷却(秒)
 };
 
 enum class CommandType : std::uint8_t {
     Move,
     Stop,
+    Attack,
 };
 
 // 客户端意图先入队, 到 tick 边界才统一应用 (proto-free, 便于单测)
@@ -47,6 +55,7 @@ struct PendingCommand {
     std::uint64_t owner_uid {};
     std::vector<std::uint64_t> unit_ids;
     Vec3f target {};
+    std::uint64_t target_entity {}; // 攻击目标实体 id
 };
 
 class DungeonRoom {
@@ -216,36 +225,70 @@ public:
             case CommandType::Stop:
                 ApplyStop(cmd.owner_uid, cmd.unit_ids);
                 break;
+            case CommandType::Attack:
+                ApplyAttack(cmd.owner_uid, cmd.unit_ids, cmd.target_entity);
+                break;
             }
         }
         pending_.clear();
     }
 
-    // 推进一个固定步长: 沿直线朝目标移动, 到达即停
+    // 推进一个固定步长: 移动 / 追击 / 攻击, 最后清理死亡单位
     void Step(float dt) {
         for (auto& [id, u] : units_) {
-            if (!u.has_target) {
-                continue;
+            if (u.hp <= 0.0f) {
+                continue; // 本帧已被打死, 等待清理
             }
 
-            const float dx = u.target.x - u.pos.x;
-            const float dz = u.target.z - u.pos.z;
-            const float dist = std::sqrt(dx * dx + dz * dz);
-            const float step = u.speed * dt;
-
-            if (dist <= step || dist < 1e-4f) {
-                u.pos = u.target;
-                u.has_target = false;
-                u.state = 0; // idle
-            } else {
-                u.pos.x += dx / dist * step;
-                u.pos.z += dz / dist * step;
-                u.yaw = std::atan2(dx, dz);
-                u.state = 1; // moving
+            if (u.attack_cd > 0.0f) {
+                u.attack_cd -= dt;
+                if (u.attack_cd < 0.0f) {
+                    u.attack_cd = 0.0f;
+                }
             }
 
-            dirty_.insert(id);
+            if (u.attack_target != 0) {
+                StepCombat(u, dt);
+            } else if (u.has_target) {
+                StepMove(u, dt);
+            }
         }
+
+        RemoveDead();
+    }
+
+    // 战斗开始时记录初始阵营数, 用于判定团灭
+    void BeginBattle() {
+        std::unordered_set<std::uint32_t> teams;
+        for (const auto& [id, u] : units_) {
+            teams.insert(u.team);
+        }
+        initial_team_count_ = static_cast<std::uint32_t>(teams.size());
+        battle_begun_ = true;
+    }
+
+    bool IsGameOver() const { return game_over_; }
+    void SetGameOver(bool over) { game_over_ = over; }
+
+    // 还剩 <=1 个阵营有存活单位时结束; 单阵营房间(测试)不触发
+    bool CheckGameOver(std::uint32_t& winner_team) const {
+        if (!battle_begun_ || initial_team_count_ < 2) {
+            return false;
+        }
+
+        std::unordered_set<std::uint32_t> living;
+        for (const auto& [id, u] : units_) {
+            living.insert(u.team);
+        }
+
+        if (living.size() <= 1) {
+            winner_team = living.empty()
+                ? 0xFFFFFFFFu            // 同归于尽 -> 无胜者
+                : *living.begin();
+            return true;
+        }
+
+        return false;
     }
 
     const std::unordered_map<std::uint64_t, Unit>& Units() const { return units_; }
@@ -276,6 +319,7 @@ private:
             }
             it->second.target = target;
             it->second.has_target = true;
+            it->second.attack_target = 0; // 移动取消攻击
             it->second.state = 1;
             dirty_.insert(id);
         }
@@ -289,8 +333,99 @@ private:
                 continue;
             }
             it->second.has_target = false;
+            it->second.attack_target = 0;
             it->second.state = 0;
             dirty_.insert(id);
+        }
+    }
+
+    void ApplyAttack(std::uint64_t owner_uid,
+                     const std::vector<std::uint64_t>& unit_ids,
+                     std::uint64_t target_entity) {
+        for (auto id : unit_ids) {
+            auto it = units_.find(id);
+            if (it == units_.end() || it->second.owner_uid != owner_uid) {
+                continue;
+            }
+            if (id == target_entity) {
+                continue; // 不能攻击自己
+            }
+            it->second.attack_target = target_entity;
+            it->second.has_target = false;
+            it->second.state = 3; // attacking
+            dirty_.insert(id);
+        }
+    }
+
+    void StepMove(Unit& u, float dt) {
+        const float dx = u.target.x - u.pos.x;
+        const float dz = u.target.z - u.pos.z;
+        const float dist = std::sqrt(dx * dx + dz * dz);
+        const float step = u.speed * dt;
+
+        if (dist <= step || dist < 1e-4f) {
+            u.pos = u.target;
+            u.has_target = false;
+            u.state = 0; // idle
+        } else {
+            u.pos.x += dx / dist * step;
+            u.pos.z += dz / dist * step;
+            u.yaw = std::atan2(dx, dz);
+            u.state = 1; // moving
+        }
+
+        dirty_.insert(u.id);
+    }
+
+    void StepCombat(Unit& u, float dt) {
+        auto it = units_.find(u.attack_target);
+        if (it == units_.end() || it->second.hp <= 0.0f) {
+            // 目标已不存在/已死, 停手
+            u.attack_target = 0;
+            u.state = 0;
+            dirty_.insert(u.id);
+            return;
+        }
+
+        Unit& target = it->second;
+        const float dx = target.pos.x - u.pos.x;
+        const float dz = target.pos.z - u.pos.z;
+        const float dist = std::sqrt(dx * dx + dz * dz);
+
+        u.state = 3; // attacking
+
+        if (dist > kAttackRange) {
+            // 不在射程内 -> 追击
+            const float step = u.speed * dt;
+            if (step > 0.0f && dist > 1e-4f) {
+                u.pos.x += dx / dist * step;
+                u.pos.z += dz / dist * step;
+                u.yaw = std::atan2(dx, dz);
+            }
+            dirty_.insert(u.id);
+            return;
+        }
+
+        // 射程内, 冷却好了就打一下
+        if (u.attack_cd <= 0.0f) {
+            target.hp -= kAttackDamage;
+            if (target.hp < 0.0f) {
+                target.hp = 0.0f;
+            }
+            u.attack_cd = kAttackCooldown;
+            dirty_.insert(target.id);
+        }
+        dirty_.insert(u.id);
+    }
+
+    void RemoveDead() {
+        for (auto it = units_.begin(); it != units_.end();) {
+            if (it->second.hp <= 0.0f) {
+                despawned_.push_back(it->first);
+                it = units_.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -309,4 +444,9 @@ private:
     std::vector<std::uint64_t> spawned_;
     std::vector<std::uint64_t> despawned_;
     std::vector<PendingCommand> pending_;
+
+    // 战斗 / 胜负
+    std::uint32_t initial_team_count_ {};
+    bool battle_begun_ {false};
+    bool game_over_ {false};
 };
