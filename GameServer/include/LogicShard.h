@@ -5,8 +5,11 @@
 #include "GameServerTypes.h"
 #include <atomic>
 #include<boost/asio.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -41,6 +44,14 @@ public:
 
 private:
     void handleTask(LogicTask);
+
+    // ---- tick / state-sync ----
+    boost::asio::awaitable<void> TickLoop();
+    void TickRooms();
+    void SpawnInitialUnits(DungeonRoom& room);
+    void SendFullSnapshot(DungeonRoom& room);
+    void SendDelta(DungeonRoom& room);
+
     bool SendToPlayer(MsgId msg_id,
                       Uid uid,
                       const google::protobuf::MessageLite& message,
@@ -59,6 +70,8 @@ private:
     std::thread thread_;
     boost::asio::io_context ioc_;
     std::unique_ptr<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>work_guard_;
+    boost::asio::steady_timer tick_timer_;
+    std::chrono::steady_clock::time_point next_tick_deadline_;
     std::unordered_map<Uid, std::uint64_t> uid_to_room_;
     std::unordered_map<std::uint64_t, DungeonRoom> rooms_;
     std::uint64_t next_room_id_ {1};
