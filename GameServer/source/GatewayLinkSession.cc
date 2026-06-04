@@ -5,6 +5,7 @@
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/uuid/random_generator.hpp>
@@ -37,6 +38,9 @@ void GatewayLinkSession::BindSlot(std::size_t slot_id, std::uint64_t generation)
 
 void GatewayLinkSession::Start() {
     Set_state(Session_state::Conected);
+
+    boost::system::error_code nodelay_ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
 
     auto self = shared_from_this();
 
@@ -157,8 +161,6 @@ boost::asio::awaitable<void> GatewayLinkSession::start_heartbeat() {
 }
 
 boost::asio::awaitable<std::size_t> GatewayLinkSession::ReadHead() {
-    std::memset(buffer_.get(), 0, Buffer_size);
-
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_.get(), HEAD_TOTAL_LEN),
@@ -224,8 +226,6 @@ boost::asio::awaitable<bool> GatewayLinkSession::ReadData(std::size_t len) {
     if (len == 0) {
         co_return true;
     }
-
-    std::memset(buffer_.get(), 0, Buffer_size);
 
     auto [ec, recv_len] = co_await boost::asio::async_read(
         socket_,

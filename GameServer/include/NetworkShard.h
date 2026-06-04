@@ -65,11 +65,6 @@ private:
                              SeqId seq,
                              std::shared_ptr<const RecvNode> body);
 
-    void HandleEnterDungeon(LinkId link_id,
-                            MsgId msg_id,
-                            SeqId seq,
-                            std::shared_ptr<const RecvNode> body);
-
     void HandlePlayerInput(LinkId link_id,
                            MsgId msg_id,
                            SeqId seq,
@@ -97,7 +92,6 @@ private:
     void BindUidToGatewayLink(Uid uid, LinkId link_id);
     void UnbindGatewayLink(std::size_t slot_id, std::uint64_t generation);
 
-    Uid ParseUid(const std::shared_ptr<const RecvNode>& body);
     std::shared_ptr<SendNode> BuildGameToGatewayEnvelope(
         const NetworkTask& task,
         const std::vector<Uid>& target_uids) const;

@@ -47,6 +47,9 @@ Csession::~Csession() {
 void Csession::start() {
     Set_state(Session_state::Conected);
 
+    boost::system::error_code nodelay_ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+
     auto self = shared_from_this();
     boost::asio::co_spawn(
         socket_.get_executor(),
@@ -117,7 +120,6 @@ boost::asio::awaitable<void> Csession::start_heartbeat() {
 }
 
 boost::asio::awaitable<std::size_t> Csession::ReadHead() {
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, HEAD_TOTAL_LEN),
@@ -188,7 +190,6 @@ boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
         co_return true;
     }
 
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, len),

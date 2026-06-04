@@ -378,30 +378,6 @@ void NetworkShard::HandleRoomLifecycle(LinkId link_id,
     server_->PostToLogic(logic_shard_id, std::move(task));
 }
 
-void NetworkShard::HandleEnterDungeon(LinkId link_id,
-                                      MsgId msg_id,
-                                      SeqId seq,
-                                      std::shared_ptr<const RecvNode> body) {
-    auto uid = ParseUid(body);
-    if (uid == 0) {
-        spdlog::warn("enter dungeon failed: invalid uid");
-        return;
-    }
-
-    auto logic_shard_id = PickLogicShard();
-
-    BindUidToLogicShard(uid, logic_shard_id);
-    BindUidToGatewayLink(uid, link_id);
-
-    LogicTask task;
-    task.msg_id = msg_id;
-    task.uid = uid;
-    task.seq = seq;
-    task.body = std::move(body);
-
-    server_->PostToLogic(logic_shard_id, std::move(task));
-}
-
 void NetworkShard::HandlePlayerInput(LinkId link_id,
                                      MsgId msg_id,
                                      SeqId seq,
@@ -621,23 +597,6 @@ void NetworkShard::UnbindGatewayLink(std::size_t slot_id, std::uint64_t generati
             ++it;
         }
     }
-}
-
-Uid NetworkShard::ParseUid(const std::shared_ptr<const RecvNode>& body) {
-    // TODO:
-    // 从 protobuf GatewayToGameEnvelope 中解析 uid。
-    //
-    // message GatewayToGameEnvelope {
-    //   uint64 uid = 1;
-    //   uint32 inner_msg_id = 2;
-    //   bytes payload = 3;
-    // }
-    rts::v1::GateToGameEnvelope envelope;
-    if (!ParseGateToGameEnvelope(body, envelope)) {
-        return 0;
-    }
-
-    return envelope.uid();
 }
 
 std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(

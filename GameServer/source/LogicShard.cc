@@ -249,9 +249,7 @@ void LogicShard::SendFullSnapshot(DungeonRoom& room) {
         FillUnitSnapshot(*ntf.add_units(), unit);
     }
 
-    for (auto uid : room.PlayerUids()) {
-        SendToPlayer(MsgId::SnapshotNtf, uid, ntf, room.ServerTick());
-    }
+    SendToPlayers(MsgId::SnapshotNtf, room.PlayerUids(), ntf, room.ServerTick());
 }
 
 void LogicShard::SendDelta(DungeonRoom& room) {
@@ -277,9 +275,7 @@ void LogicShard::SendDelta(DungeonRoom& room) {
         spawn.set_entity_type(rts::v1::ENTITY_UNIT);
         spawn.set_entity_state(std::move(state_bytes));
 
-        for (auto uid : player_uids) {
-            SendToPlayer(MsgId::EntitySpawnNtf, uid, spawn, tick);
-        }
+        SendToPlayers(MsgId::EntitySpawnNtf, player_uids, spawn, tick);
     }
 
     // 2. 销毁实体
@@ -291,9 +287,7 @@ void LogicShard::SendDelta(DungeonRoom& room) {
         ref->set_type(rts::v1::ENTITY_UNIT);
         ref->set_id(id);
 
-        for (auto uid : player_uids) {
-            SendToPlayer(MsgId::EntityDespawnNtf, uid, despawn, tick);
-        }
+        SendToPlayers(MsgId::EntityDespawnNtf, player_uids, despawn, tick);
     }
 
     // 3. 状态变化(排除本帧新生的, 它们已在 spawn 里带过全量)
@@ -316,9 +310,7 @@ void LogicShard::SendDelta(DungeonRoom& room) {
     }
 
     if (has_changes) {
-        for (auto uid : player_uids) {
-            SendToPlayer(MsgId::WorldDeltaNtf, uid, delta, tick);
-        }
+        SendToPlayers(MsgId::WorldDeltaNtf, player_uids, delta, tick);
     }
 }
 
@@ -352,6 +344,35 @@ bool LogicShard::SendToPlayer(MsgId msg_id,
     return true;
 }
 
+void LogicShard::SendToPlayers(MsgId msg_id,
+                               const std::vector<Uid>& uids,
+                               const google::protobuf::MessageLite& message,
+                               SeqId server_seq) {
+    if (!server_ || uids.empty()) {
+        return;
+    }
+
+    std::string payload;
+    if (!rts::protocol::SerializeProtoToString(message, payload)) {
+        spdlog::error("serialize logic broadcast failed, msg={}",
+                      static_cast<std::uint16_t>(msg_id));
+        return;
+    }
+
+    auto packet = std::make_shared<SendNode>(
+        payload.empty() ? nullptr : payload.data(),
+        static_cast<std::uint32_t>(payload.size()),
+        static_cast<std::uint16_t>(msg_id));
+
+    NetworkTask network_task;
+    network_task.msg_id = msg_id;
+    network_task.seq = server_seq;
+    network_task.target_uids = uids;
+    network_task.body = std::move(packet);
+
+    server_->PostToNetwork(std::move(network_task));
+}
+
 void LogicShard::SendCommandRejected(Uid uid,
                                      std::uint64_t room_id,
                                      SeqId client_seq,
@@ -379,27 +400,6 @@ void LogicShard::BroadcastRoomState(const DungeonRoom& room) {
 
     for (auto uid : room.PlayerUids()) {
         SendToPlayer(MsgId::RoomStateNtf, uid, ntf);
-    }
-}
-
-void LogicShard::BroadcastCommandFrame(DungeonRoom& room,
-                                       const rts::v1::GateToGameEnvelope& envelope,
-                                       MsgId msg_id) {
-    const auto server_tick = room.NextServerTick();
-
-    rts::v1::CommandFrameNtf ntf;
-    ntf.set_room_id(room.RoomId());
-    ntf.set_server_tick(server_tick);
-
-    auto* command = ntf.add_commands();
-    command->set_command_id(room.NextCommandId());
-    command->set_uid(envelope.uid());
-    command->set_client_seq(envelope.client_seq());
-    command->set_inner_msg_id(static_cast<std::uint16_t>(msg_id));
-    command->set_payload(envelope.payload());
-
-    for (auto uid : room.PlayerUids()) {
-        SendToPlayer(MsgId::CommandFrameNtf, uid, ntf, server_tick);
     }
 }
 

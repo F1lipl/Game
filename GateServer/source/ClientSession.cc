@@ -136,6 +136,8 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
         }
 
         state_ = ClientSession_state::Connected;
+        boost::system::error_code nodelay_ec;
+        socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
         last_recv_time_ = std::chrono::steady_clock::now();
         last_pong_time_ = last_recv_time_;
         SendGateLinkHello();
@@ -344,7 +346,6 @@ boost::asio::awaitable<void> ClientSession::HandleRead(){
 }
 
 boost::asio::awaitable<size_t>ClientSession::Readhead(){
-   std::memset(buffer_, 0, Buffer_size);
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, HEAD_TOTAL_LEN),
@@ -415,7 +416,6 @@ boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
         co_return true;
     }
 
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, len),
