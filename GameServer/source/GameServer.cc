@@ -30,7 +30,8 @@ GameServer::GameServer(boost::asio::io_context& network_ioc,
 
     logic_shards_.reserve(logic_shard_count_);
     for (std::size_t i = 0; i < logic_shard_count_; ++i) {
-        logic_shards_.push_back(std::make_unique<LogicShard>(this));
+        logic_shards_.push_back(std::make_unique<LogicShard>(
+            this, static_cast<ShardId>(i), logic_shard_count_));
     }
 }
 
