@@ -143,6 +143,21 @@ target_link_libraries(GateServer PRIVATE
     GateServerLib
 )
 
+# ---- Load testing tool ----
+add_executable(loadtest
+    tools/loadtest.cc
+)
+
+target_include_directories(loadtest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(loadtest PRIVATE
+    rts_proto
+    Boost::system
+    Threads::Threads
+)
+
 # ---- Tests ----
 # DungeonRoom is pure simulation logic (no proto/boost), so the test target
 # only needs Catch2 + the GameServer headers.
