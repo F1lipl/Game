@@ -172,6 +172,10 @@ void LogicShard::postTask(LogicTask task) {
 }
 
 void LogicShard::handleTask(LogicTask task) {
+    // 记录这个 uid 最近一次入站的"路由坐标", 回包时按它找对应网络 shard 的链路
+    if (task.uid != 0) {
+        uid_route_[task.uid] = task.origin;
+    }
     bool ok=LogicRouter::Getinstance()->Dispatch(this,std::move(task));
     if(!ok){
         spdlog::debug("call back undefined msgid");
@@ -325,29 +329,8 @@ bool LogicShard::SendToPlayer(MsgId msg_id,
                               Uid uid,
                               const google::protobuf::MessageLite& message,
                               SeqId server_seq) {
-    if (!server_) {
-        return false;
-    }
-
-    std::string payload;
-    if (!rts::protocol::SerializeProtoToString(message, payload)) {
-        spdlog::error("serialize logic response failed, msg={}",
-                      static_cast<std::uint16_t>(msg_id));
-        return false;
-    }
-
-    auto packet = std::make_shared<SendNode>(
-        payload.empty() ? nullptr : payload.data(),
-        static_cast<std::uint32_t>(payload.size()),
-        static_cast<std::uint16_t>(msg_id));
-
-    NetworkTask network_task;
-    network_task.msg_id = msg_id;
-    network_task.seq = server_seq;
-    network_task.target_uids.push_back(uid);
-    network_task.body = std::move(packet);
-
-    server_->PostToNetwork(std::move(network_task));
+    const std::vector<Uid> one{uid};
+    SendToPlayers(msg_id, one, message, server_seq);
     return true;
 }
 
@@ -359,9 +342,10 @@ void LogicShard::SendToPlayers(MsgId msg_id,
         return;
     }
 
+    // 序列化一次, 复用给所有目标
     std::string payload;
     if (!rts::protocol::SerializeProtoToString(message, payload)) {
-        spdlog::error("serialize logic broadcast failed, msg={}",
+        spdlog::error("serialize logic response failed, msg={}",
                       static_cast<std::uint16_t>(msg_id));
         return;
     }
@@ -371,13 +355,32 @@ void LogicShard::SendToPlayers(MsgId msg_id,
         static_cast<std::uint32_t>(payload.size()),
         static_cast<std::uint16_t>(msg_id));
 
-    NetworkTask network_task;
-    network_task.msg_id = msg_id;
-    network_task.seq = server_seq;
-    network_task.target_uids = uids;
-    network_task.body = std::move(packet);
+    // 按 网络shard -> 链路 分组(同链路上的多个 uid 合并成一个 envelope)
+    std::unordered_map<NetworkShardId,
+                       std::unordered_map<LinkId, NetworkSendTarget>> grouped;
+    for (auto uid : uids) {
+        auto it = uid_route_.find(uid);
+        if (it == uid_route_.end()) {
+            continue; // 还没见过这个 uid 的入站, 无法路由
+        }
+        const auto& route = it->second;
+        auto& target = grouped[route.net_shard][route.link_id];
+        target.link_id = route.link_id;
+        target.generation = route.generation;
+        target.uids.push_back(uid);
+    }
 
-    server_->PostToNetwork(std::move(network_task));
+    for (auto& [net_shard, links] : grouped) {
+        NetworkTask task;
+        task.msg_id = msg_id;
+        task.seq = server_seq;
+        task.body = packet; // 多个 shard 共享同一份只读 SendNode
+        task.targets.reserve(links.size());
+        for (auto& [link_id, target] : links) {
+            task.targets.push_back(std::move(target));
+        }
+        server_->PostToNetwork(net_shard, std::move(task));
+    }
 }
 
 void LogicShard::SendCommandRejected(Uid uid,

@@ -77,6 +77,7 @@ private:
     boost::asio::steady_timer tick_timer_;
     std::chrono::steady_clock::time_point next_tick_deadline_;
     std::unordered_map<Uid, std::uint64_t> uid_to_room_;
+    std::unordered_map<Uid, GatewayRoute> uid_route_;
     std::unordered_map<std::uint64_t, DungeonRoom> rooms_;
     std::uint64_t next_room_id_ {1};
     std::atomic<bool>b_stop_;

@@ -3,22 +3,26 @@
 #include "../../common/ProtoCodec.h"
 #include "rts.pb.h"
 
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <spdlog/spdlog.h>
+
+#include <sys/socket.h> // SO_REUSEPORT
 
 #include <chrono>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <vector>
 
 namespace {
+
+// SO_REUSEPORT lets every network shard bind the same port; the kernel load
+// balances incoming connections across the shards' acceptors.
+using reuse_port = boost::asio::detail::socket_option::boolean<SOL_SOCKET, SO_REUSEPORT>;
 
 std::string_view BodyView(const std::shared_ptr<const RecvNode>& body) {
     if (!body || body->_data == nullptr || body->_total_len == 0) {
         return {};
     }
-
     return std::string_view(body->_data, body->_total_len);
 }
 
@@ -28,12 +32,10 @@ bool ParseGateToGameEnvelope(const std::shared_ptr<const RecvNode>& body,
         spdlog::warn("parse GateToGameEnvelope failed");
         return false;
     }
-
     if (envelope.inner_msg_id() == 0) {
         spdlog::warn("GateToGameEnvelope missing inner_msg_id");
         return false;
     }
-
     return true;
 }
 
@@ -57,185 +59,158 @@ std::string ExtractPacketPayload(const std::shared_ptr<SendNode>& packet) {
     if (!packet || packet->_data == nullptr || packet->_total_len == 0) {
         return {};
     }
-
     if (packet->_total_len >= HEAD_TOTAL_LEN) {
         const auto* data = reinterpret_cast<const unsigned char*>(packet->_data);
         const auto magic = static_cast<std::uint16_t>((data[0] << 8) | data[1]);
         if (magic == rts::protocol::kPacketMagic) {
-            return std::string(
-                packet->_data + HEAD_TOTAL_LEN,
-                packet->_total_len - HEAD_TOTAL_LEN);
+            return std::string(packet->_data + HEAD_TOTAL_LEN,
+                               packet->_total_len - HEAD_TOTAL_LEN);
         }
     }
-
     return std::string(packet->_data, packet->_total_len);
 }
 
 } // namespace
 
 NetworkShard::NetworkShard(GameServer* server,
-                           boost::asio::io_context& ioc,
+                           NetworkShardId shard_id,
                            std::size_t max_links)
     : server_(server),
-      ioc_(ioc),
+      shard_id_(shard_id),
+      retry_timer_(ioc_),
       slots_(max_links) {}
 
-void NetworkShard::Start() {
+NetworkShard::~NetworkShard() {
+    Stop();
+}
+
+void NetworkShard::Start(const std::string& listen_ip, unsigned short port) {
+    using boost::asio::ip::tcp;
+
     stopping_ = false;
+    ioc_.restart();
+
+    acceptor_ = std::make_unique<tcp::acceptor>(ioc_);
+    tcp::endpoint endpoint(boost::asio::ip::make_address(listen_ip), port);
+    acceptor_->open(endpoint.protocol());
+    acceptor_->set_option(tcp::acceptor::reuse_address(true));
+    acceptor_->set_option(reuse_port(true));
+    acceptor_->bind(endpoint);
+    acceptor_->listen(boost::asio::socket_base::max_listen_connections);
+
+    work_guard_ = std::make_unique<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>(ioc_.get_executor());
+
+    boost::asio::post(ioc_, [this]() { DoAccept(); });
+
+    thread_ = std::thread([this]() { ioc_.run(); });
 }
 
 void NetworkShard::Stop() {
-    stopping_ = true;
-
-    for (auto& slot : slots_) {
-        if (slot.session) {
-            slot.state = SlotState::Closing;
-            slot.session->Close();
-            slot.session.reset();
-        }
-
-        slot.state = SlotState::Closed;
+    if (stopping_.exchange(true)) {
+        return;
     }
 
-    uid_to_logic_shard_.clear();
-    uid_to_gateway_route_.clear();
-    rr_idx_ = 0;
-    next_logic_idx_ = 0;
+    boost::asio::post(ioc_, [this]() {
+        boost::system::error_code ec;
+        if (acceptor_) {
+            acceptor_->cancel(ec);
+            acceptor_->close(ec);
+        }
+        retry_timer_.cancel(ec);
+        for (auto& slot : slots_) {
+            if (slot.session) {
+                slot.session->Close();
+                slot.session.reset();
+            }
+            slot.state = SlotState::Closed;
+        }
+    });
+
+    work_guard_.reset();
+    if (thread_.joinable()) {
+        thread_.join();
+    }
 }
 
-std::shared_ptr<GatewayLinkSession> NetworkShard::CreateAcceptSession() {
-    if (stopping_) {
-        return nullptr;
+void NetworkShard::DoAccept() {
+    if (stopping_ || !acceptor_ || !acceptor_->is_open()) {
+        return;
     }
 
     auto slot_idx = FindAvailableSlot();
     if (!slot_idx.has_value()) {
-        spdlog::debug("create gateway link session skipped: no free slot");
-        return nullptr;
+        retry_timer_.expires_after(std::chrono::milliseconds(50));
+        retry_timer_.async_wait([this](const boost::system::error_code& ec) {
+            if (!ec && !stopping_) {
+                DoAccept();
+            }
+        });
+        return;
     }
 
     auto& slot = slots_[*slot_idx];
-
     slot.generation++;
     slot.link_id = static_cast<LinkId>(*slot_idx);
     slot.state = SlotState::Accepting;
 
     auto session = std::make_shared<GatewayLinkSession>(this, ioc_);
     session->BindSlot(*slot_idx, slot.generation);
-
     slot.session = session;
-    return session;
-}
 
-void NetworkShard::OnAcceptSuccess(std::size_t slot_id, std::uint64_t generation) {
-    if (slot_id >= slots_.size()) {
-        return;
-    }
+    const auto idx = *slot_idx;
+    const auto gen = slot.generation;
 
-    auto& slot = slots_[slot_id];
+    acceptor_->async_accept(
+        session->get_socket(),
+        [this, session, idx, gen](const boost::system::error_code& ec) {
+            auto& s = slots_[idx];
+            if (ec) {
+                if (s.generation == gen) {
+                    if (s.session) {
+                        s.session->Close();
+                        s.session.reset();
+                    }
+                    s.state = SlotState::Closed;
+                }
+                if (ec != boost::asio::error::operation_aborted && !stopping_) {
+                    DoAccept();
+                }
+                return;
+            }
 
-    if (slot.generation != generation || !slot.session) {
-        return;
-    }
-
-    if (slot.state != SlotState::Accepting) {
-        return;
-    }
-
-    slot.state = SlotState::Connected;
-    slot.session->Start();
-
-    spdlog::debug("gateway link slot {} accept success", slot_id);
-}
-
-void NetworkShard::OnAcceptFailed(std::size_t slot_id, std::uint64_t generation) {
-    if (slot_id >= slots_.size()) {
-        return;
-    }
-
-    auto& slot = slots_[slot_id];
-
-    if (slot.generation != generation) {
-        return;
-    }
-
-    if (slot.session) {
-        slot.session->Close();
-        slot.session.reset();
-    }
-
-    slot.state = SlotState::Closed;
-
-    spdlog::warn("gateway link slot {} accept failed", slot_id);
+            if (s.generation == gen && s.state == SlotState::Accepting && s.session) {
+                s.state = SlotState::Connected;
+                s.session->Start();
+                spdlog::debug("net shard {} accepted link slot {}", shard_id_, idx);
+            }
+            if (!stopping_) {
+                DoAccept();
+            }
+        });
 }
 
 void NetworkShard::OnSessionClosed(std::size_t slot_id, std::uint64_t generation) {
     if (slot_id >= slots_.size()) {
         return;
     }
-
     auto& slot = slots_[slot_id];
-
     if (slot.generation != generation) {
         return;
     }
-
     slot.state = SlotState::Closed;
     slot.session.reset();
-    UnbindGatewayLink(slot_id, generation);
-
-    spdlog::warn("gateway link slot {} closed", slot_id);
+    spdlog::debug("net shard {} link slot {} closed", shard_id_, slot_id);
 }
 
 std::optional<std::size_t> NetworkShard::FindAvailableSlot() const {
     for (std::size_t i = 0; i < slots_.size(); ++i) {
         const auto& slot = slots_[i];
-
-        if (slot.state == SlotState::Empty ||
-            slot.state == SlotState::Closed) {
+        if (slot.state == SlotState::Empty || slot.state == SlotState::Closed) {
             return i;
         }
     }
-
     return std::nullopt;
-}
-
-std::shared_ptr<GatewayLinkSession> NetworkShard::SelectAvailableSession() {
-    if (slots_.empty()) {
-        return nullptr;
-    }
-
-    const auto n = slots_.size();
-
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto idx = rr_idx_++ % n;
-        auto& slot = slots_[idx];
-
-        if (slot.state == SlotState::Connected &&
-            slot.session &&
-            slot.session->IsAvailable()) {
-            return slot.session;
-        }
-    }
-
-    return nullptr;
-}
-
-std::shared_ptr<GatewayLinkSession> NetworkShard::FindSessionByRoute(
-    const GatewayRoute& route) const {
-    if (route.link_id >= slots_.size()) {
-        return nullptr;
-    }
-
-    const auto& slot = slots_[route.link_id];
-    if (slot.generation != route.generation ||
-        slot.state != SlotState::Connected ||
-        !slot.session ||
-        !slot.session->IsAvailable()) {
-        return nullptr;
-    }
-
-    return slot.session;
 }
 
 void NetworkShard::OnPacket(LinkId link_id,
@@ -254,7 +229,6 @@ void NetworkShard::OnPacket(LinkId link_id,
         if (!ParseGateToGameEnvelope(body, envelope)) {
             return;
         }
-
         dispatch_msg_id = static_cast<MsgId>(envelope.inner_msg_id());
         dispatch_seq = envelope.client_seq();
     }
@@ -263,19 +237,14 @@ void NetworkShard::OnPacket(LinkId link_id,
     case MsgId::GateLinkHello:
         HandleGateLinkHello(link_id, std::move(body));
         break;
-
     case MsgId::PingReq:
         HandlePingReq(link_id, std::move(body));
         break;
-
     case MsgId::CreateRoomReq:
     case MsgId::JoinRoomReq:
     case MsgId::LeaveRoomReq:
     case MsgId::PlayerReadyReq:
     case MsgId::EnterBattleReq:
-        HandleRoomLifecycle(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
-        break;
-
     case MsgId::MoveCmd:
     case MsgId::AttackCmd:
     case MsgId::SkillCmd:
@@ -286,32 +255,61 @@ void NetworkShard::OnPacket(LinkId link_id,
     case MsgId::ConstructCmd:
     case MsgId::TrainUnitCmd:
     case MsgId::StopCmd:
-        HandlePlayerInput(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
+        ForwardToLogic(link_id, dispatch_msg_id, dispatch_seq, std::move(body));
         break;
-
     default:
-        spdlog::warn("unknown msg_id {}", static_cast<std::uint16_t>(dispatch_msg_id));
+        spdlog::warn("net shard {} unknown msg_id {}", shard_id_,
+                     static_cast<std::uint16_t>(dispatch_msg_id));
         break;
     }
+}
+
+void NetworkShard::ForwardToLogic(LinkId link_id,
+                                  MsgId msg_id,
+                                  SeqId seq,
+                                  std::shared_ptr<const RecvNode> body) {
+    rts::v1::GateToGameEnvelope envelope;
+    if (!ParseGateToGameEnvelope(body, envelope)) {
+        return;
+    }
+    const auto uid = envelope.uid();
+    if (uid == 0) {
+        spdlog::warn("net shard {} forward failed: invalid uid", shard_id_);
+        return;
+    }
+    if (!server_ || server_->LogicShardCount() == 0) {
+        spdlog::warn("net shard {} forward failed: no logic shard", shard_id_);
+        return;
+    }
+
+    const auto logic_shard_id = ResolveLogicShard(msg_id, envelope);
+
+    LogicTask task;
+    task.msg_id = msg_id;
+    task.uid = uid;
+    task.seq = seq;
+    task.origin = MakeRoute(link_id);
+    task.body = std::move(body);
+
+    server_->PostToLogic(logic_shard_id, std::move(task));
 }
 
 void NetworkShard::HandleGateLinkHello(LinkId link_id,
                                        std::shared_ptr<const RecvNode> body) {
     rts::v1::GateLinkHello hello;
     if (!rts::protocol::ParseProtoFromBytes(BodyView(body), hello)) {
-        spdlog::warn("parse GateLinkHello failed on link {}", link_id);
+        spdlog::warn("net shard {} parse GateLinkHello failed on link {}", shard_id_, link_id);
         return;
     }
-
-    spdlog::debug("gate link hello received, link={}, gate_id={}, link_index={}",
-                  link_id, hello.gate_id(), hello.link_index());
+    spdlog::debug("net shard {} gate link hello, link={}, gate_id={}, link_index={}",
+                  shard_id_, link_id, hello.gate_id(), hello.link_index());
 }
 
 void NetworkShard::HandlePingReq(LinkId link_id,
                                  std::shared_ptr<const RecvNode> body) {
     rts::v1::PingReq ping;
     if (!rts::protocol::ParseProtoFromBytes(BodyView(body), ping)) {
-        spdlog::warn("parse PingReq failed on link {}", link_id);
+        spdlog::warn("net shard {} parse PingReq failed on link {}", shard_id_, link_id);
         return;
     }
 
@@ -321,103 +319,29 @@ void NetworkShard::HandlePingReq(LinkId link_id,
 
     std::string payload;
     if (!rts::protocol::SerializeProtoToString(pong, payload)) {
-        spdlog::error("serialize PongRsp failed on link {}", link_id);
+        spdlog::error("net shard {} serialize PongRsp failed", shard_id_);
         return;
     }
 
-    SendToGatewayLink(
-        link_id,
-        BuildPacket(MsgId::PongRsp, payload));
+    SendToGatewayLink(link_id, BuildPacket(MsgId::PongRsp, payload));
 }
 
 void NetworkShard::SendToGatewayLink(LinkId link_id, std::shared_ptr<SendNode> packet) {
     if (!packet || link_id >= slots_.size()) {
         return;
     }
-
     auto& slot = slots_[link_id];
     if (slot.state != SlotState::Connected || !slot.session || !slot.session->IsAvailable()) {
-        spdlog::warn("send to gateway link {} failed: unavailable", link_id);
+        spdlog::warn("net shard {} send to link {} failed: unavailable", shard_id_, link_id);
         return;
     }
-
     slot.session->PostSend(std::move(packet));
 }
 
-void NetworkShard::HandleRoomLifecycle(LinkId link_id,
-                                       MsgId msg_id,
-                                       SeqId seq,
-                                       std::shared_ptr<const RecvNode> body) {
-    rts::v1::GateToGameEnvelope envelope;
-    if (!ParseGateToGameEnvelope(body, envelope)) {
-        spdlog::warn("room lifecycle failed: parse envelope");
-        return;
-    }
-
-    const auto uid = envelope.uid();
-    if (uid == 0) {
-        spdlog::warn("room lifecycle failed: invalid uid");
-        return;
-    }
-
-    if (!server_ || server_->LogicShardCount() == 0) {
-        spdlog::warn("room lifecycle failed: no logic shard");
-        return;
-    }
-
-    const auto logic_shard_id = ResolveLogicShard(msg_id, uid, envelope);
-    BindUidToLogicShard(uid, logic_shard_id);
-    BindUidToGatewayLink(uid, link_id);
-
-    LogicTask task;
-    task.msg_id = msg_id;
-    task.uid = uid;
-    task.seq = seq;
-    task.body = std::move(body);
-
-    server_->PostToLogic(logic_shard_id, std::move(task));
-}
-
-void NetworkShard::HandlePlayerInput(LinkId link_id,
-                                     MsgId msg_id,
-                                     SeqId seq,
-                                     std::shared_ptr<const RecvNode> body) {
-    rts::v1::GateToGameEnvelope envelope;
-    if (!ParseGateToGameEnvelope(body, envelope)) {
-        spdlog::warn("player input failed: parse envelope");
-        return;
-    }
-
-    const auto uid = envelope.uid();
-    if (uid == 0) {
-        spdlog::warn("player input failed: invalid uid");
-        return;
-    }
-
-    if (!server_ || server_->LogicShardCount() == 0) {
-        spdlog::warn("player input failed: no logic shard");
-        return;
-    }
-
-    const auto logic_shard_id = ResolveLogicShard(msg_id, uid, envelope);
-    BindUidToLogicShard(uid, logic_shard_id);
-    BindUidToGatewayLink(uid, link_id);
-
-    LogicTask task;
-    task.msg_id = msg_id;
-    task.uid = uid;
-    task.seq = seq;
-    task.body = std::move(body);
-
-    server_->PostToLogic(logic_shard_id, std::move(task));
-}
-
 void NetworkShard::PostTask(NetworkTask task) {
-    boost::asio::post(
-        ioc_.get_executor(),
-        [this, task = std::move(task)]() mutable {
-            HandleNetworkTask(std::move(task));
-        });
+    boost::asio::post(ioc_, [this, task = std::move(task)]() mutable {
+        HandleNetworkTask(std::move(task));
+    });
 }
 
 void NetworkShard::HandleNetworkTask(NetworkTask task) {
@@ -425,109 +349,38 @@ void NetworkShard::HandleNetworkTask(NetworkTask task) {
         return;
     }
 
-    if (task.target_uids.empty()) {
-        auto session = SelectAvailableSession();
-        if (!session) {
-            spdlog::error("send to gateway failed: no available gateway link");
-            return;
-        }
-
-        auto packet = BuildGameToGatewayEnvelope(task, task.target_uids);
-        if (!packet) {
-            spdlog::error("send to gateway failed: build envelope failed");
-            return;
-        }
-
-        session->PostSend(std::move(packet));
-        return;
-    }
-
-    std::unordered_map<LinkId, std::vector<Uid>> routed_uids;
-    std::vector<Uid> fallback_uids;
-
-    for (auto uid : task.target_uids) {
-        auto route_it = uid_to_gateway_route_.find(uid);
-        if (route_it == uid_to_gateway_route_.end() ||
-            !FindSessionByRoute(route_it->second)) {
-            fallback_uids.push_back(uid);
+    for (const auto& tgt : task.targets) {
+        if (tgt.link_id >= slots_.size()) {
             continue;
         }
-
-        routed_uids[route_it->second.link_id].push_back(uid);
-    }
-
-    for (const auto& [link_id, uids] : routed_uids) {
-        if (uids.empty()) {
-            continue;
+        auto& slot = slots_[tgt.link_id];
+        if (slot.generation != tgt.generation ||
+            slot.state != SlotState::Connected ||
+            !slot.session ||
+            !slot.session->IsAvailable()) {
+            continue; // stale route or link gone -> drop (client reconnect handles it)
         }
 
-        const auto route_it = uid_to_gateway_route_.find(uids.front());
-        if (route_it == uid_to_gateway_route_.end()) {
-            fallback_uids.insert(fallback_uids.end(), uids.begin(), uids.end());
-            continue;
+        auto packet = BuildGameToGatewayEnvelope(task, tgt.uids);
+        if (packet) {
+            slot.session->PostSend(std::move(packet));
         }
-
-        auto session = FindSessionByRoute(route_it->second);
-        if (!session) {
-            fallback_uids.insert(fallback_uids.end(), uids.begin(), uids.end());
-            continue;
-        }
-
-        auto packet = BuildGameToGatewayEnvelope(task, uids);
-        if (!packet) {
-            spdlog::error("send to sticky gateway link {} failed: build envelope failed",
-                          link_id);
-            continue;
-        }
-
-        session->PostSend(std::move(packet));
-    }
-
-    if (!fallback_uids.empty()) {
-        auto session = SelectAvailableSession();
-        if (!session) {
-            spdlog::error("fallback send to gateway failed: no available gateway link");
-            return;
-        }
-
-        auto packet = BuildGameToGatewayEnvelope(task, fallback_uids);
-        if (!packet) {
-            spdlog::error("fallback send to gateway failed: build envelope failed");
-            return;
-        }
-
-        spdlog::warn("fallback send {} target uid(s) without sticky gateway route",
-                     fallback_uids.size());
-        session->PostSend(std::move(packet));
     }
 }
 
 ShardId NetworkShard::PickLogicShard() {
-    if (!server_) {
-        return 0;
-    }
-
-    const auto count = server_->LogicShardCount();
+    const auto count = server_ ? server_->LogicShardCount() : 0;
     if (count == 0) {
         return 0;
     }
-
-    const auto id = next_logic_idx_++ % count;
-    return static_cast<ShardId>(id);
+    return static_cast<ShardId>(next_logic_idx_++ % count);
 }
 
-// 逻辑分片路由:
-// - CreateRoomReq 还没有 room_id, 用轮询挑一个 shard;
-//   该 shard 生成的 room_id 会落在自己的同余类里 (room_id % count == shard_id)
-// - 其它房间消息按 room_id % count 路由, 保证房间和它所有成员落在同一 shard
-// - room_id 拿不到时回退到已有的 uid->shard 绑定
 ShardId NetworkShard::ResolveLogicShard(MsgId msg_id,
-                                        Uid uid,
                                         const rts::v1::GateToGameEnvelope& envelope) {
     if (!server_) {
         return 0;
     }
-
     const auto count = server_->LogicShardCount();
     if (count == 0) {
         return 0;
@@ -544,74 +397,25 @@ ShardId NetworkShard::ResolveLogicShard(MsgId msg_id,
             room_id = hint.room_id();
         }
     }
-
     if (room_id != 0) {
         return static_cast<ShardId>(room_id % count);
     }
-
-    return FindLogicShard(uid).value_or(0);
+    return 0;
 }
 
-std::optional<ShardId> NetworkShard::FindLogicShard(Uid uid) const {
-    auto it = uid_to_logic_shard_.find(uid);
-    if (it == uid_to_logic_shard_.end()) {
-        return std::nullopt;
+GatewayRoute NetworkShard::MakeRoute(LinkId link_id) const {
+    GatewayRoute route;
+    route.net_shard = shard_id_;
+    route.link_id = link_id;
+    if (link_id < slots_.size()) {
+        route.generation = slots_[link_id].generation;
     }
-
-    return it->second;
-}
-
-void NetworkShard::BindUidToLogicShard(Uid uid, ShardId shard_id) {
-    uid_to_logic_shard_[uid] = shard_id;
-}
-
-void NetworkShard::UnbindUid(Uid uid) {
-    uid_to_logic_shard_.erase(uid);
-    uid_to_gateway_route_.erase(uid);
-}
-
-void NetworkShard::BindUidToGatewayLink(Uid uid, LinkId link_id) {
-    if (link_id >= slots_.size()) {
-        return;
-    }
-
-    const auto& slot = slots_[link_id];
-    if (slot.state != SlotState::Connected ||
-        !slot.session ||
-        !slot.session->IsAvailable()) {
-        return;
-    }
-
-    uid_to_gateway_route_[uid] = GatewayRoute {
-        link_id,
-        slot.generation,
-    };
-}
-
-void NetworkShard::UnbindGatewayLink(std::size_t slot_id, std::uint64_t generation) {
-    for (auto it = uid_to_gateway_route_.begin(); it != uid_to_gateway_route_.end();) {
-        const auto& route = it->second;
-        if (route.link_id == slot_id && route.generation == generation) {
-            it = uid_to_gateway_route_.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    return route;
 }
 
 std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(
     const NetworkTask& task,
     const std::vector<Uid>& target_uids) const {
-    // TODO:
-    // 构造 GameToGatewayEnvelope:
-    //
-    // message GameToGatewayEnvelope {
-    //   repeated uint64 target_uids = 1;
-    //   uint32 inner_msg_id = 2;
-    //   bytes payload = 3;
-    // }
-    //
-    // 如果 task.body 已经是完整可发包，可以第一版直接返回。
     rts::v1::GameToGateEnvelope envelope;
     for (auto uid : target_uids) {
         envelope.add_target_uids(uid);
@@ -622,7 +426,7 @@ std::shared_ptr<SendNode> NetworkShard::BuildGameToGatewayEnvelope(
 
     std::string payload;
     if (!rts::protocol::SerializeProtoToString(envelope, payload)) {
-        spdlog::error("serialize GameToGateEnvelope failed");
+        spdlog::error("net shard {} serialize GameToGateEnvelope failed", shard_id_);
         return nullptr;
     }
 
