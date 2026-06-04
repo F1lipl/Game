@@ -142,3 +142,29 @@ add_executable(GateServer
 target_link_libraries(GateServer PRIVATE
     GateServerLib
 )
+
+# ---- Tests ----
+# DungeonRoom is pure simulation logic (no proto/boost), so the test target
+# only needs Catch2 + the GameServer headers.
+find_package(Catch2 3 QUIET)
+if(Catch2_FOUND)
+    enable_testing()
+
+    add_executable(DungeonRoomTest
+        tests/DungeonRoomTest.cc
+    )
+
+    target_include_directories(DungeonRoomTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/GameServer/include
+    )
+
+    target_link_libraries(DungeonRoomTest PRIVATE
+        Catch2::Catch2WithMain
+    )
+
+    list(APPEND CMAKE_MODULE_PATH ${Catch2_DIR})
+    include(Catch)
+    catch_discover_tests(DungeonRoomTest)
+else()
+    message(STATUS "Catch2 not found; skipping tests")
+endif()
