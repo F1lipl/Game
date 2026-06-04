@@ -57,6 +57,11 @@ private:
                       Uid uid,
                       const google::protobuf::MessageLite& message,
                       SeqId server_seq = 0);
+    // 序列化一次, 复用给房间内所有玩家 (一个 NetworkTask 带多个 target_uids)
+    void SendToPlayers(MsgId msg_id,
+                       const std::vector<Uid>& uids,
+                       const google::protobuf::MessageLite& message,
+                       SeqId server_seq = 0);
     void SendCommandRejected(Uid uid,
                              std::uint64_t room_id,
                              SeqId client_seq,
@@ -64,9 +69,6 @@ private:
                              const std::string& reason);
     void BroadcastRoomState(const DungeonRoom& room);
     void BroadcastGameStart(const DungeonRoom& room);
-    void BroadcastCommandFrame(DungeonRoom& room,
-                               const rts::v1::GateToGameEnvelope& envelope,
-                               MsgId msg_id);
 
     std::thread thread_;
     boost::asio::io_context ioc_;
