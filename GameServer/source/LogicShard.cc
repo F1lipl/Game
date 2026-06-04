@@ -5,9 +5,15 @@
 #include "rts.pb.h"
 
 #include <algorithm>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <spdlog/spdlog.h>
@@ -15,6 +21,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -22,7 +29,14 @@ namespace {
 constexpr std::uint32_t kDefaultMaxPlayers = 2;
 constexpr std::uint32_t kMaxRoomPlayers = 4;
 constexpr std::uint32_t kDefaultTickRate = 20;
-constexpr std::uint32_t kDefaultSnapshotRate = 2;
+
+// tick / 状态同步参数
+constexpr std::chrono::milliseconds kTickInterval {50}; // 20Hz
+constexpr float kTickSeconds = 0.05f;
+constexpr std::uint64_t kFullSnapshotInterval = 20; // 每 20 个 tick 一次全量, 其余增量
+constexpr float kUnitSpeed = 3.0f;  // 单位/秒
+constexpr float kUnitHp = 100.0f;
+constexpr std::uint32_t kStartUnitsPerPlayer = 2;
 
 std::string_view BodyView(const std::shared_ptr<const RecvNode>& body) {
     if (!body || body->_data == nullptr || body->_total_len == 0) {
@@ -85,12 +99,26 @@ std::uint64_t ResolveRoomId(const rts::v1::GateToGameEnvelope& envelope,
     return 0;
 }
 
+void FillUnitSnapshot(rts::v1::UnitStateSnapshot& out, const Unit& u) {
+    out.set_id(u.id);
+    out.set_team(ToProtoTeam(u.team));
+    out.set_unit_type(rts::v1::UNIT_VILLAGER);
+    auto* pos = out.mutable_position();
+    pos->set_x(u.pos.x);
+    pos->set_y(u.pos.y);
+    pos->set_z(u.pos.z);
+    out.set_yaw(u.yaw);
+    out.set_hp(u.hp);
+    out.set_state(static_cast<rts::v1::UnitState>(u.state));
+}
+
 } // namespace
 
 
 LogicShard::LogicShard(GameServer* server)
-    : server_(server),
-      b_stop_(false) {}
+    : tick_timer_(ioc_),
+      b_stop_(false),
+      server_(server) {}
 
 void LogicShard::start() {
     if (thread_.joinable()) {
@@ -104,6 +132,13 @@ void LogicShard::start() {
         std::make_unique<boost::asio::executor_work_guard<
             boost::asio::io_context::executor_type>>(ioc_.get_executor());
 
+    boost::asio::co_spawn(
+        ioc_.get_executor(),
+        [this]() -> boost::asio::awaitable<void> {
+            co_await TickLoop();
+        },
+        boost::asio::detached);
+
     thread_ = std::thread([this]() {
         ioc_.run();
     });
@@ -111,6 +146,9 @@ void LogicShard::start() {
 
 void LogicShard::stop() {
     b_stop_ = true;
+
+    boost::system::error_code ec;
+    tick_timer_.cancel(ec);
 
     work_guard_.reset();
     ioc_.stop();
@@ -137,6 +175,149 @@ void LogicShard::handleTask(LogicTask task) {
         spdlog::debug("call back undefined msgid");
     }
     spdlog::debug("handle msg success");
+}
+
+// 固定步长心跳: 绝对时刻调度防累积漂移; 落后过多直接重新对齐(防死亡螺旋)
+boost::asio::awaitable<void> LogicShard::TickLoop() {
+    boost::system::error_code ec;
+    next_tick_deadline_ = std::chrono::steady_clock::now() + kTickInterval;
+
+    while (!b_stop_) {
+        tick_timer_.expires_at(next_tick_deadline_);
+        ec.clear();
+        co_await tick_timer_.async_wait(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+        if (ec == boost::asio::error::operation_aborted) {
+            co_return;
+        }
+        if (ec) {
+            spdlog::error("logic shard tick timer error: {}", ec.message());
+            co_return;
+        }
+
+        TickRooms();
+
+        next_tick_deadline_ += kTickInterval;
+        const auto now = std::chrono::steady_clock::now();
+        if (next_tick_deadline_ < now) {
+            // 落后了, 丢掉错过的 tick 重新对齐, 而不是无限追帧
+            next_tick_deadline_ = now + kTickInterval;
+        }
+    }
+}
+
+void LogicShard::TickRooms() {
+    for (auto& [room_id, room] : rooms_) {
+        if (!room.Started()) {
+            continue;
+        }
+
+        room.ApplyPending();   // 应用本帧攒下的输入
+        room.Step(kTickSeconds); // 推进仿真一步
+
+        const auto server_tick = room.NextServerTick();
+        if (server_tick % kFullSnapshotInterval == 0) {
+            SendFullSnapshot(room);
+        } else {
+            SendDelta(room);
+        }
+        room.ClearFrameChanges();
+    }
+}
+
+void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
+    for (const auto& player : room.Players()) {
+        for (std::uint32_t i = 0; i < kStartUnitsPerPlayer; ++i) {
+            Vec3f pos;
+            pos.x = static_cast<float>(player.team) * 20.0f;
+            pos.y = 0.0f;
+            pos.z = static_cast<float>(i) * 2.0f;
+            room.SpawnUnit(player.uid, player.team, 0, pos, kUnitHp, kUnitSpeed);
+        }
+    }
+}
+
+void LogicShard::SendFullSnapshot(DungeonRoom& room) {
+    rts::v1::SnapshotNtf ntf;
+    ntf.set_room_id(room.RoomId());
+    ntf.set_server_tick(room.ServerTick());
+
+    for (const auto& [id, unit] : room.Units()) {
+        FillUnitSnapshot(*ntf.add_units(), unit);
+    }
+
+    for (auto uid : room.PlayerUids()) {
+        SendToPlayer(MsgId::SnapshotNtf, uid, ntf, room.ServerTick());
+    }
+}
+
+void LogicShard::SendDelta(DungeonRoom& room) {
+    const auto tick = room.ServerTick();
+    const auto player_uids = room.PlayerUids();
+    const auto& spawned = room.Spawned();
+
+    // 1. 新生实体: 每个发一条 EntitySpawnNtf, 携带完整初始状态
+    for (auto id : spawned) {
+        const Unit* unit = room.FindUnit(id);
+        if (!unit) {
+            continue;
+        }
+
+        rts::v1::UnitStateSnapshot state;
+        FillUnitSnapshot(state, *unit);
+        std::string state_bytes;
+        state.SerializeToString(&state_bytes);
+
+        rts::v1::EntitySpawnNtf spawn;
+        spawn.set_room_id(room.RoomId());
+        spawn.set_server_tick(tick);
+        spawn.set_entity_type(rts::v1::ENTITY_UNIT);
+        spawn.set_entity_state(std::move(state_bytes));
+
+        for (auto uid : player_uids) {
+            SendToPlayer(MsgId::EntitySpawnNtf, uid, spawn, tick);
+        }
+    }
+
+    // 2. 销毁实体
+    for (auto id : room.Despawned()) {
+        rts::v1::EntityDespawnNtf despawn;
+        despawn.set_room_id(room.RoomId());
+        despawn.set_server_tick(tick);
+        auto* ref = despawn.mutable_entity();
+        ref->set_type(rts::v1::ENTITY_UNIT);
+        ref->set_id(id);
+
+        for (auto uid : player_uids) {
+            SendToPlayer(MsgId::EntityDespawnNtf, uid, despawn, tick);
+        }
+    }
+
+    // 3. 状态变化(排除本帧新生的, 它们已在 spawn 里带过全量)
+    std::unordered_set<std::uint64_t> spawned_set(spawned.begin(), spawned.end());
+    rts::v1::WorldDeltaNtf delta;
+    delta.set_room_id(room.RoomId());
+    delta.set_server_tick(tick);
+
+    bool has_changes = false;
+    for (auto id : room.Dirty()) {
+        if (spawned_set.count(id) != 0) {
+            continue;
+        }
+        const Unit* unit = room.FindUnit(id);
+        if (!unit) {
+            continue;
+        }
+        FillUnitSnapshot(*delta.add_units(), *unit);
+        has_changes = true;
+    }
+
+    if (has_changes) {
+        for (auto uid : player_uids) {
+            SendToPlayer(MsgId::WorldDeltaNtf, uid, delta, tick);
+        }
+    }
 }
 
 bool LogicShard::SendToPlayer(MsgId msg_id,
@@ -225,7 +406,7 @@ void LogicShard::BroadcastGameStart(const DungeonRoom& room) {
     ntf.set_room_id(room.RoomId());
     ntf.set_server_tick(room.ServerTick());
     ntf.set_tick_rate(kDefaultTickRate);
-    ntf.set_snapshot_rate(kDefaultSnapshotRate);
+    ntf.set_snapshot_rate(static_cast<std::uint32_t>(kFullSnapshotInterval));
     ntf.set_random_seed(room.RoomId() * 1103515245ULL + 12345ULL);
 
     for (auto uid : room.PlayerUids()) {
@@ -394,6 +575,11 @@ void LogicShard::HandlePlayerReady(LogicTask task) {
     if (room.AllReady() && !room.Started()) {
         room.SetStarted(true);
         BroadcastGameStart(room);
+
+        // 服务器权威地生成初始单位, 并下发一帧全量做 baseline
+        SpawnInitialUnits(room);
+        SendFullSnapshot(room);
+        room.ClearFrameChanges();
     }
 }
 
@@ -487,5 +673,48 @@ void LogicShard::HandlePlayerCommand(LogicTask task) {
         return;
     }
 
-    BroadcastCommandFrame(room, envelope, task.msg_id);
+    // 收集命令: 解析意图后入队, 到 tick 边界统一应用 (不立即改世界)
+    switch (task.msg_id) {
+    case MsgId::MoveCmd: {
+        rts::v1::MoveCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid MoveCmd");
+            return;
+        }
+
+        PendingCommand pending;
+        pending.type = CommandType::Move;
+        pending.owner_uid = task.uid;
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        if (cmd.has_target_position()) {
+            pending.target.x = cmd.target_position().x();
+            pending.target.y = cmd.target_position().y();
+            pending.target.z = cmd.target_position().z();
+        }
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::StopCmd: {
+        rts::v1::StopCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid StopCmd");
+            return;
+        }
+
+        PendingCommand pending;
+        pending.type = CommandType::Stop;
+        pending.owner_uid = task.uid;
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    default:
+        spdlog::debug("command msg {} not simulated yet",
+                      static_cast<std::uint16_t>(task.msg_id));
+        break;
+    }
 }
