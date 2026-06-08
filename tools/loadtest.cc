@@ -95,6 +95,9 @@ struct RoomState {
     std::uint64_t last_tick{0};
     Clock::time_point first_t{};
     Clock::time_point last_t{};
+    std::uint64_t field_id{0};
+    std::uint64_t crystal_id{0};
+    bool economy_started{false};
 };
 
 struct Conn {
@@ -185,6 +188,17 @@ void Reader(Conn& c) {
             auto& st = c.rooms[uid];
             st.units.clear();
             for (const auto& u : snap.units()) st.units.push_back(u.id());
+            if (st.field_id == 0 && snap.resource_fields_size() > 0) {
+                st.field_id = snap.resource_fields(0).id();
+            }
+            if (st.crystal_id == 0) {
+                for (const auto& b : snap.buildings()) {
+                    if (b.building_type() == rts::v1::BUILDING_CRYSTAL) {
+                        st.crystal_id = b.id();
+                        break;
+                    }
+                }
+            }
             if (!st.units.empty()) st.phase = 2;
             const auto now = Clock::now();
             if (st.first_tick == 0) { st.first_tick = snap.server_tick(); st.first_t = now; }
@@ -230,32 +244,50 @@ void DriveConn(Conn& c, std::uint64_t base_uid, std::size_t rooms,
 
     std::thread reader([&c]() { Reader(c); });
 
-    std::mt19937 rng(static_cast<unsigned>(base_uid));
-    std::uniform_real_distribution<float> pos(-50.0f, 50.0f);
-
     const auto end = Clock::now() + std::chrono::seconds(duration_sec);
+    int iter = 0;
     while (Clock::now() < end) {
         const auto tick_start = Clock::now();
-        std::vector<std::pair<std::uint64_t, std::pair<std::uint64_t, std::vector<std::uint64_t>>>> playing;
+        ++iter;
+        const bool do_train = (iter % 10 == 0); // ~1Hz training
+
+        struct Job {
+            std::uint64_t uid, room_id, field_id, crystal_id;
+            std::vector<std::uint64_t> units;
+            bool start_harvest;
+        };
+        std::vector<Job> jobs;
         {
             std::lock_guard<std::mutex> lk(c.state_mtx);
             for (auto& [uid, st] : c.rooms) {
-                if (st.phase == 2 && !st.units.empty()) {
-                    playing.push_back({uid, {st.room_id, st.units}});
-                }
+                if (st.phase != 2 || st.units.empty()) continue;
+                Job j{uid, st.room_id, st.field_id, st.crystal_id, st.units,
+                      (!st.economy_started && st.field_id != 0)};
+                if (j.start_harvest) st.economy_started = true;
+                jobs.push_back(std::move(j));
             }
         }
-        for (auto& [uid, rd] : playing) {
-            rts::v1::MoveCmd cmd;
-            cmd.set_room_id(rd.first);
-            for (auto id : rd.second) cmd.add_actor_unit_ids(id);
-            auto* t = cmd.mutable_target_position();
-            t->set_x(pos(rng));
-            t->set_z(pos(rng));
-            std::string inner;
-            cmd.SerializeToString(&inner);
-            SendRaw(c, Envelope(uid, rd.first,
-                static_cast<std::uint16_t>(proto::MsgId::MoveCmd), inner));
+        for (auto& j : jobs) {
+            // 进房一次性发采集 -> 工人进入持续 采集/返还 自治循环
+            if (j.start_harvest) {
+                rts::v1::HarvestCmd cmd;
+                cmd.set_room_id(j.room_id);
+                cmd.set_resource_field_id(j.field_id);
+                for (auto id : j.units) cmd.add_actor_unit_ids(id);
+                std::string inner; cmd.SerializeToString(&inner);
+                SendRaw(c, Envelope(j.uid, j.room_id,
+                    static_cast<std::uint16_t>(proto::MsgId::HarvestCmd), inner));
+            }
+            // 周期性产兵 -> 训练队列一直运转
+            if (do_train && j.crystal_id != 0) {
+                rts::v1::TrainUnitCmd cmd;
+                cmd.set_room_id(j.room_id);
+                cmd.set_producer_building_id(j.crystal_id);
+                cmd.set_unit_type(rts::v1::UNIT_VILLAGER);
+                std::string inner; cmd.SerializeToString(&inner);
+                SendRaw(c, Envelope(j.uid, j.room_id,
+                    static_cast<std::uint16_t>(proto::MsgId::TrainUnitCmd), inner));
+            }
         }
 
         // latency probe: raw PingReq carrying a monotonic token, server echoes it
