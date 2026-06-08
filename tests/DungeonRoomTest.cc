@@ -276,6 +276,33 @@ PendingCommand MakeTrain(std::uint64_t owner,
 
 } // namespace
 
+TEST_CASE("Move with a waypoint path follows the polyline, not a straight line") {
+    DungeonRoom room(1, "r", 2);
+    const auto id = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+
+    PendingCommand cmd;
+    cmd.type = CommandType::Move;
+    cmd.owner_uid = 100;
+    cmd.unit_ids = {id};
+    cmd.path = { Vec3f{0.0f, 0.0f, 5.0f}, Vec3f{5.0f, 0.0f, 5.0f} }; // +Z 然后 +X
+    cmd.target = Vec3f{5.0f, 0.0f, 5.0f};
+    room.EnqueueCommand(cmd);
+    room.ApplyPending();
+
+    // speed 10, dt 0.1 => 1.0/tick; 第一段长 5 => 5 个 tick 到第一个拐点
+    for (int i = 0; i < 5; ++i) room.Step(0.1f);
+    const Unit* mid = room.FindUnit(id);
+    REQUIRE(mid->pos.x == Approx(0.0f).margin(0.05)); // 走了 +Z 而非斜穿
+    REQUIRE(mid->pos.z == Approx(5.0f).margin(0.05));
+
+    for (int i = 0; i < 15; ++i) room.Step(0.1f);
+    const Unit* end = room.FindUnit(id);
+    REQUIRE(end->pos.x == Approx(5.0f));
+    REQUIRE(end->pos.z == Approx(5.0f));
+    REQUIRE_FALSE(end->has_target);
+    REQUIRE(end->state == 0); // 到达后 idle
+}
+
 TEST_CASE("Worker harvests a field and deposits resources at a dropoff") {
     DungeonRoom room(1, "r", 2);
     room.AddPlayer(100);

@@ -223,6 +223,9 @@ message MoveCmd {
   repeated uint64 actor_unit_ids = 2;
   Vec3 target_position = 3;
   bool attack_move = 4;
+  // 方案A: 客户端用 NavMesh 算好的折线路径 (waypoints), 服务器沿其权威推进。
+  // 为空则退化为直接走向 target_position。
+  repeated Vec3 path = 5;
 }
 
 message AttackCmd {

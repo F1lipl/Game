@@ -860,6 +860,17 @@ void LogicShard::HandlePlayerCommand(LogicTask task) {
             pending.target.y = cmd.target_position().y();
             pending.target.z = cmd.target_position().z();
         }
+        // 方案A: 客户端 NavMesh 折线路径
+        for (const auto& wp : cmd.path()) {
+            Vec3f v;
+            v.x = wp.x();
+            v.y = wp.y();
+            v.z = wp.z();
+            pending.path.push_back(v);
+        }
+        if (!pending.path.empty()) {
+            pending.target = pending.path.back(); // 兜底终点
+        }
         room.EnqueueCommand(std::move(pending));
         break;
     }

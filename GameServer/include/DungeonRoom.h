@@ -156,6 +156,8 @@ struct Unit {
     Vec3f pos {};
     Vec3f target {};
     bool has_target {false};
+    std::vector<Vec3f> path;        // 方案A: 待走的折线 waypoints (空=直线走 target)
+    std::size_t path_index {};      // 当前目标 waypoint 下标
     float yaw {};
     float hp {};
     float speed {};
@@ -251,6 +253,7 @@ struct PendingCommand {
     std::uint64_t client_seq {};
     std::vector<std::uint64_t> unit_ids;
     Vec3f target {};
+    std::vector<Vec3f> path;        // 方案A: MoveCmd 的 waypoints
     std::uint64_t target_entity {}; // 攻击/采集/存放/捡拾/施工 的目标实体 id
     std::uint32_t aux_type {};      // building_type (Build) 或 unit_type (Train)
     float yaw {};                   // Build 朝向
@@ -490,7 +493,7 @@ public:
         for (auto& cmd : pending_) {
             switch (cmd.type) {
             case CommandType::Move:
-                ApplyMove(cmd.owner_uid, cmd.unit_ids, cmd.target);
+                ApplyMove(cmd.owner_uid, cmd.unit_ids, cmd.target, cmd.path);
                 break;
             case CommandType::Stop:
                 ApplyStop(cmd.owner_uid, cmd.unit_ids);
@@ -704,12 +707,15 @@ private:
         u.pickup_drop_id = 0;
         u.build_target_id = 0;
         u.work_cd = 0.0f;
+        u.path.clear();
+        u.path_index = 0;
     }
 
     // 反作弊兜底: 只能指挥属于自己的单位
     void ApplyMove(std::uint64_t owner_uid,
                    const std::vector<std::uint64_t>& unit_ids,
-                   const Vec3f& target) {
+                   const Vec3f& target,
+                   const std::vector<Vec3f>& path = {}) {
         for (auto id : unit_ids) {
             auto it = units_.find(id);
             if (it == units_.end() || it->second.owner_uid != owner_uid) {
@@ -718,6 +724,8 @@ private:
             auto& u = it->second;
             ClearWorkerTask(u);
             u.target = target;
+            u.path = path;       // 方案A: 沿 waypoints 走; 空则直线走 target
+            u.path_index = 0;
             u.has_target = true;
             u.attack_target = 0; // 移动取消攻击
             u.state = kStateMoving;
@@ -947,21 +955,44 @@ private:
         return false;
     }
 
+    // 方案A: 有 path 则沿 waypoints 依次走 (一个 tick 内可跨多个近点), 否则直线走 target
     void StepMove(Unit& u, float dt) {
-        const float dx = u.target.x - u.pos.x;
-        const float dz = u.target.z - u.pos.z;
-        const float dist = std::sqrt(dx * dx + dz * dz);
-        const float step = u.speed * dt;
+        float remaining = u.speed * dt;
 
-        if (dist <= step || dist < 1e-4f) {
-            u.pos = u.target;
-            u.has_target = false;
-            u.state = kStateIdle; // idle
-        } else {
-            u.pos.x += dx / dist * step;
-            u.pos.z += dz / dist * step;
+        while (remaining > 1e-5f) {
+            const bool on_path = !u.path.empty() && u.path_index < u.path.size();
+            const Vec3f dest = on_path ? u.path[u.path_index] : u.target;
+
+            const float dx = dest.x - u.pos.x;
+            const float dz = dest.z - u.pos.z;
+            const float dist = std::sqrt(dx * dx + dz * dz);
+
+            if (dist <= remaining || dist < 1e-4f) {
+                // 到达当前目标点
+                u.pos = dest;
+                remaining -= (dist > 0.0f ? dist : 0.0f);
+                if (on_path) {
+                    ++u.path_index;
+                    if (u.path_index >= u.path.size()) {
+                        u.path.clear();
+                        u.path_index = 0;
+                        u.has_target = false;
+                        u.state = kStateIdle;
+                        break;
+                    }
+                    continue; // 还有下一个 waypoint, 用剩余步长继续走
+                }
+                u.has_target = false;
+                u.state = kStateIdle;
+                break;
+            }
+
+            // 朝 dest 走一步
+            u.pos.x += dx / dist * remaining;
+            u.pos.z += dz / dist * remaining;
             u.yaw = std::atan2(dx, dz);
-            u.state = kStateMoving; // moving
+            u.state = kStateMoving;
+            break;
         }
 
         dirty_.insert(u.id);
