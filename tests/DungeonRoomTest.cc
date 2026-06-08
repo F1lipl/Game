@@ -249,3 +249,124 @@ TEST_CASE("Single-team room never declares game over") {
     std::uint32_t winner = 99;
     REQUIRE_FALSE(room.CheckGameOver(winner));
 }
+
+namespace {
+
+PendingCommand MakeHarvest(std::uint64_t owner,
+                           std::vector<std::uint64_t> ids,
+                           std::uint64_t field_id) {
+    PendingCommand cmd;
+    cmd.type = CommandType::Harvest;
+    cmd.owner_uid = owner;
+    cmd.unit_ids = std::move(ids);
+    cmd.target_entity = field_id;
+    return cmd;
+}
+
+PendingCommand MakeTrain(std::uint64_t owner,
+                         std::uint64_t building_id,
+                         std::uint32_t unit_type) {
+    PendingCommand cmd;
+    cmd.type = CommandType::Train;
+    cmd.owner_uid = owner;
+    cmd.target_entity = building_id;
+    cmd.aux_type = unit_type;
+    return cmd;
+}
+
+} // namespace
+
+TEST_CASE("Worker harvests a field and deposits resources at a dropoff") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    room.SpawnBuilding(100, 0, kBuildingCrystal, Vec3f{0.0f, 0.0f, 0.0f}, 0.0f, false);
+    const auto field = room.SpawnResourceField(kRawWood, Vec3f{5.0f, 0.0f, 0.0f}, 100);
+    const auto worker = room.SpawnUnit(100, 0, kUnitVillager, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    const std::uint32_t wood_before = room.FindPlayerRes(100)->wood;
+
+    room.EnqueueCommand(MakeHarvest(100, {worker}, field));
+    room.ApplyPending();
+
+    for (int i = 0; i < 200; ++i) {
+        room.Step(0.1f);
+    }
+
+    REQUIRE(room.FindPlayerRes(100)->wood > wood_before);
+    REQUIRE(room.FindField(field)->amount_left < 100u);
+}
+
+TEST_CASE("Build deducts cost, creates a site, and construction completes it") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    room.BeginBattle();
+    const auto worker = room.SpawnUnit(100, 0, kUnitVillager, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+
+    const std::uint32_t wood_before = room.FindPlayerRes(100)->wood;
+
+    PendingCommand build;
+    build.type = CommandType::Build;
+    build.owner_uid = 100;
+    build.unit_ids = {worker};
+    build.aux_type = kBuildingResourceCamp;
+    build.target = Vec3f{2.0f, 0.0f, 0.0f};
+    room.EnqueueCommand(build);
+    room.ApplyPending();
+
+    REQUIRE(room.FindPlayerRes(100)->wood == wood_before - BuildingCost(kBuildingResourceCamp).wood);
+    REQUIRE(room.Buildings().size() == 1);
+
+    for (int i = 0; i < 200; ++i) {
+        room.Step(0.1f);
+    }
+
+    const Building* built = nullptr;
+    for (const auto& [id, b] : room.Buildings()) {
+        built = &b;
+    }
+    REQUIRE(built != nullptr);
+    REQUIRE_FALSE(built->under_construction);
+    REQUIRE(built->constructed_percent == Approx(100.0f));
+}
+
+TEST_CASE("Training queues a unit and spawns it after the timer") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    const auto inn = room.SpawnBuilding(100, 0, kBuildingVillagerInn, Vec3f{}, 0.0f, false);
+    room.BeginBattle();
+
+    const std::size_t units_before = room.Units().size();
+
+    room.EnqueueCommand(MakeTrain(100, inn, kUnitVillager));
+    room.ApplyPending();
+    REQUIRE(room.FindPlayerRes(100)->food == kStartFood - UnitCost(kUnitVillager).food);
+
+    for (int i = 0; i < 60; ++i) { // 5s train time / 0.1 = 50 ticks
+        room.Step(0.1f);
+    }
+
+    REQUIRE(room.Units().size() == units_before + 1);
+}
+
+TEST_CASE("Commands are rejected when the player cannot afford them") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    const auto inn = room.SpawnBuilding(100, 0, kBuildingVillagerInn, Vec3f{}, 0.0f, false);
+    room.BeginBattle(); // food = kStartFood (200), villager costs 50 => 4 affordable
+
+    for (int i = 0; i < 4; ++i) {
+        room.EnqueueCommand(MakeTrain(100, inn, kUnitVillager));
+    }
+    room.ApplyPending();
+    REQUIRE(room.FindPlayerRes(100)->food == 0u);
+    REQUIRE(room.TakeRejected().empty());
+
+    // 5th training has no food left
+    room.EnqueueCommand(MakeTrain(100, inn, kUnitVillager));
+    room.ApplyPending();
+
+    auto rejected = room.TakeRejected();
+    REQUIRE(rejected.size() == 1);
+    REQUIRE(rejected[0].code == kErrNotEnoughResources);
+}

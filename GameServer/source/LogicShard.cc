@@ -102,7 +102,7 @@ std::uint64_t ResolveRoomId(const rts::v1::GateToGameEnvelope& envelope,
 void FillUnitSnapshot(rts::v1::UnitStateSnapshot& out, const Unit& u) {
     out.set_id(u.id);
     out.set_team(ToProtoTeam(u.team));
-    out.set_unit_type(rts::v1::UNIT_VILLAGER);
+    out.set_unit_type(static_cast<rts::v1::UnitType>(u.unit_type));
     auto* pos = out.mutable_position();
     pos->set_x(u.pos.x);
     pos->set_y(u.pos.y);
@@ -110,6 +110,53 @@ void FillUnitSnapshot(rts::v1::UnitStateSnapshot& out, const Unit& u) {
     out.set_yaw(u.yaw);
     out.set_hp(u.hp);
     out.set_state(static_cast<rts::v1::UnitState>(u.state));
+    out.set_carried_amount(u.carried_amount);
+    out.set_carried_raw(static_cast<rts::v1::ResourceRaw>(u.carried_raw));
+}
+
+void FillBuildingSnapshot(rts::v1::BuildingStateSnapshot& out, const Building& b) {
+    out.set_id(b.id);
+    out.set_team(ToProtoTeam(b.team));
+    out.set_building_type(static_cast<rts::v1::BuildingType>(b.building_type));
+    auto* pos = out.mutable_position();
+    pos->set_x(b.pos.x);
+    pos->set_y(b.pos.y);
+    pos->set_z(b.pos.z);
+    out.set_yaw(b.yaw);
+    out.set_hp(b.hp);
+    out.set_constructed_percent(b.constructed_percent);
+}
+
+void FillFieldSnapshot(rts::v1::ResourceFieldStateSnapshot& out,
+                       const ResourceFieldEntity& f) {
+    out.set_id(f.id);
+    out.set_raw(static_cast<rts::v1::ResourceRaw>(f.raw));
+    auto* pos = out.mutable_position();
+    pos->set_x(f.pos.x);
+    pos->set_y(f.pos.y);
+    pos->set_z(f.pos.z);
+    out.set_yaw(f.yaw);
+    out.set_amount_left(f.amount_left);
+}
+
+void FillDropSnapshot(rts::v1::ResourceDropStateSnapshot& out,
+                      const ResourceDropEntity& d) {
+    out.set_id(d.id);
+    out.set_raw(static_cast<rts::v1::ResourceRaw>(d.raw));
+    auto* pos = out.mutable_position();
+    pos->set_x(d.pos.x);
+    pos->set_y(d.pos.y);
+    pos->set_z(d.pos.z);
+    out.set_amount(d.amount);
+}
+
+void FillPlayerResources(rts::v1::PlayerResources& out,
+                         std::uint64_t uid,
+                         const PlayerRes& r) {
+    out.set_uid(uid);
+    out.set_food(r.food);
+    out.set_wood(r.wood);
+    out.set_gold(r.gold);
 }
 
 } // namespace
@@ -220,7 +267,15 @@ void LogicShard::TickRooms() {
         }
 
         room.ApplyPending();   // 应用本帧攒下的输入
-        room.Step(kTickSeconds); // 推进仿真一步: 移动/追击/攻击/死亡
+
+        // 资源不足 / 目标非法 等被拒命令, 回 CommandRejectedNtf
+        for (const auto& rej : room.TakeRejected()) {
+            SendCommandRejected(rej.uid, room_id, rej.client_seq,
+                                static_cast<rts::v1::ErrorCode>(rej.code),
+                                "command rejected");
+        }
+
+        room.Step(kTickSeconds); // 推进仿真一步: 移动/采集/建造/追击/攻击/死亡
 
         const auto server_tick = room.NextServerTick();
         if (server_tick % kFullSnapshotInterval == 0) {
@@ -241,13 +296,36 @@ void LogicShard::TickRooms() {
 
 void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
     for (const auto& player : room.Players()) {
+        const float base_x = static_cast<float>(player.team) * 40.0f;
+
+        Vec3f base;
+        base.x = base_x;
+        base.y = 0.0f;
+        base.z = 0.0f;
+
+        // 主基地水晶 (胜负核心, 兼作资源站)
+        room.SpawnBuilding(player.uid, player.team, kBuildingCrystal,
+                           base, 0.0f, /*under_construction=*/false);
+
+        // 起始村民
         for (std::uint32_t i = 0; i < kStartUnitsPerPlayer; ++i) {
             Vec3f pos;
-            pos.x = static_cast<float>(player.team) * 20.0f;
+            pos.x = base_x + 3.0f + static_cast<float>(i) * 2.0f;
             pos.y = 0.0f;
-            pos.z = static_cast<float>(i) * 2.0f;
-            room.SpawnUnit(player.uid, player.team, 0, pos, kUnitHp, kUnitSpeed);
+            pos.z = 3.0f;
+            room.SpawnUnit(player.uid, player.team, kUnitVillager, pos,
+                           kUnitHp, kUnitSpeed);
         }
+
+        // 基地附近的资源场: 食物(浆果) / 木头 / 金子
+        Vec3f food = base; food.x = base_x - 6.0f; food.z = 6.0f;
+        room.SpawnResourceField(kRawBerries, food, 500);
+
+        Vec3f wood = base; wood.x = base_x + 6.0f; wood.z = 6.0f;
+        room.SpawnResourceField(kRawWood, wood, 500);
+
+        Vec3f gold = base; gold.x = base_x; gold.z = 10.0f;
+        room.SpawnResourceField(kRawGold, gold, 300);
     }
 }
 
@@ -259,6 +337,18 @@ void LogicShard::SendFullSnapshot(DungeonRoom& room) {
     for (const auto& [id, unit] : room.Units()) {
         FillUnitSnapshot(*ntf.add_units(), unit);
     }
+    for (const auto& [id, building] : room.Buildings()) {
+        FillBuildingSnapshot(*ntf.add_buildings(), building);
+    }
+    for (const auto& [id, field] : room.Fields()) {
+        FillFieldSnapshot(*ntf.add_resource_fields(), field);
+    }
+    for (const auto& [id, drop] : room.Drops()) {
+        FillDropSnapshot(*ntf.add_resource_drops(), drop);
+    }
+    for (const auto& [uid, res] : room.PlayerResources()) {
+        FillPlayerResources(*ntf.add_resources(), uid, res);
+    }
 
     SendToPlayers(MsgId::SnapshotNtf, room.PlayerUids(), ntf, room.ServerTick());
 }
@@ -266,57 +356,107 @@ void LogicShard::SendFullSnapshot(DungeonRoom& room) {
 void LogicShard::SendDelta(DungeonRoom& room) {
     const auto tick = room.ServerTick();
     const auto player_uids = room.PlayerUids();
-    const auto& spawned = room.Spawned();
 
-    // 1. 新生实体: 每个发一条 EntitySpawnNtf, 携带完整初始状态
-    for (auto id : spawned) {
-        const Unit* unit = room.FindUnit(id);
-        if (!unit) {
-            continue;
-        }
-
-        rts::v1::UnitStateSnapshot state;
-        FillUnitSnapshot(state, *unit);
-        std::string state_bytes;
-        state.SerializeToString(&state_bytes);
-
+    // 发一条 EntitySpawnNtf 的小工具
+    auto send_spawn = [&](rts::v1::EntityType type, std::string state_bytes) {
         rts::v1::EntitySpawnNtf spawn;
         spawn.set_room_id(room.RoomId());
         spawn.set_server_tick(tick);
-        spawn.set_entity_type(rts::v1::ENTITY_UNIT);
+        spawn.set_entity_type(type);
         spawn.set_entity_state(std::move(state_bytes));
-
         SendToPlayers(MsgId::EntitySpawnNtf, player_uids, spawn, tick);
-    }
+    };
 
-    // 2. 销毁实体
-    for (auto id : room.Despawned()) {
+    auto send_despawn = [&](rts::v1::EntityType type, std::uint64_t id) {
         rts::v1::EntityDespawnNtf despawn;
         despawn.set_room_id(room.RoomId());
         despawn.set_server_tick(tick);
         auto* ref = despawn.mutable_entity();
-        ref->set_type(rts::v1::ENTITY_UNIT);
+        ref->set_type(type);
         ref->set_id(id);
-
         SendToPlayers(MsgId::EntityDespawnNtf, player_uids, despawn, tick);
+    };
+
+    // 1. 新生实体 (各类型, 携带完整初始状态)
+    for (auto id : room.Spawned()) {
+        const Unit* unit = room.FindUnit(id);
+        if (!unit) continue;
+        rts::v1::UnitStateSnapshot state;
+        FillUnitSnapshot(state, *unit);
+        std::string bytes;
+        state.SerializeToString(&bytes);
+        send_spawn(rts::v1::ENTITY_UNIT, std::move(bytes));
+    }
+    for (auto id : room.BuildingsSpawned()) {
+        const Building* b = room.FindBuilding(id);
+        if (!b) continue;
+        rts::v1::BuildingStateSnapshot state;
+        FillBuildingSnapshot(state, *b);
+        std::string bytes;
+        state.SerializeToString(&bytes);
+        send_spawn(rts::v1::ENTITY_BUILDING, std::move(bytes));
+    }
+    for (auto id : room.FieldsSpawned()) {
+        const ResourceFieldEntity* f = room.FindField(id);
+        if (!f) continue;
+        rts::v1::ResourceFieldStateSnapshot state;
+        FillFieldSnapshot(state, *f);
+        std::string bytes;
+        state.SerializeToString(&bytes);
+        send_spawn(rts::v1::ENTITY_RESOURCE_FIELD, std::move(bytes));
+    }
+    for (auto id : room.DropsSpawned()) {
+        const ResourceDropEntity* d = room.FindDrop(id);
+        if (!d) continue;
+        rts::v1::ResourceDropStateSnapshot state;
+        FillDropSnapshot(state, *d);
+        std::string bytes;
+        state.SerializeToString(&bytes);
+        send_spawn(rts::v1::ENTITY_RESOURCE_DROP, std::move(bytes));
+    }
+
+    // 2. 销毁实体
+    for (auto id : room.Despawned()) {
+        send_despawn(rts::v1::ENTITY_UNIT, id);
+    }
+    for (auto id : room.BuildingsDespawned()) {
+        send_despawn(rts::v1::ENTITY_BUILDING, id);
+    }
+    for (auto id : room.FieldsDespawned()) {
+        send_despawn(rts::v1::ENTITY_RESOURCE_FIELD, id);
+    }
+    for (auto id : room.DropsDespawned()) {
+        send_despawn(rts::v1::ENTITY_RESOURCE_DROP, id);
     }
 
     // 3. 状态变化(排除本帧新生的, 它们已在 spawn 里带过全量)
-    std::unordered_set<std::uint64_t> spawned_set(spawned.begin(), spawned.end());
+    std::unordered_set<std::uint64_t> unit_spawned(room.Spawned().begin(),
+                                                   room.Spawned().end());
+    std::unordered_set<std::uint64_t> building_spawned(room.BuildingsSpawned().begin(),
+                                                       room.BuildingsSpawned().end());
     rts::v1::WorldDeltaNtf delta;
     delta.set_room_id(room.RoomId());
     delta.set_server_tick(tick);
 
     bool has_changes = false;
     for (auto id : room.Dirty()) {
-        if (spawned_set.count(id) != 0) {
-            continue;
-        }
+        if (unit_spawned.count(id) != 0) continue;
         const Unit* unit = room.FindUnit(id);
-        if (!unit) {
-            continue;
-        }
+        if (!unit) continue;
         FillUnitSnapshot(*delta.add_units(), *unit);
+        has_changes = true;
+    }
+    for (auto id : room.BuildingsDirty()) {
+        if (building_spawned.count(id) != 0) continue;
+        const Building* b = room.FindBuilding(id);
+        if (!b) continue;
+        FillBuildingSnapshot(*delta.add_buildings(), *b);
+        has_changes = true;
+    }
+    for (auto uid : room.ResourceDirty()) {
+        const PlayerRes* r = room.FindPlayerRes(uid);
+        if (!r) continue;
+        FillPlayerResources(*delta.add_resources(), uid, *r);
         has_changes = true;
     }
 
@@ -755,6 +895,113 @@ void LogicShard::HandlePlayerCommand(LogicTask task) {
         if (cmd.has_target()) {
             pending.target_entity = cmd.target().id();
         }
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::HarvestCmd: {
+        rts::v1::HarvestCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid HarvestCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Harvest;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        pending.target_entity = cmd.resource_field_id();
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::StoreResourceCmd: {
+        rts::v1::StoreResourceCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid StoreResourceCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Store;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        pending.target_entity = cmd.resource_camp_id();
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::PickupResourceCmd: {
+        rts::v1::PickupResourceCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid PickupResourceCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Pickup;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
+                                cmd.actor_unit_ids().end());
+        pending.target_entity = cmd.resource_drop_id();
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::BuildCmd: {
+        rts::v1::BuildCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid BuildCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Build;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.unit_ids.assign(cmd.builder_unit_ids().begin(),
+                                cmd.builder_unit_ids().end());
+        pending.aux_type = static_cast<std::uint32_t>(cmd.building_type());
+        if (cmd.has_position()) {
+            pending.target.x = cmd.position().x();
+            pending.target.y = cmd.position().y();
+            pending.target.z = cmd.position().z();
+        }
+        pending.yaw = cmd.yaw();
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::ConstructCmd: {
+        rts::v1::ConstructCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid ConstructCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Construct;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.unit_ids.assign(cmd.builder_unit_ids().begin(),
+                                cmd.builder_unit_ids().end());
+        pending.target_entity = cmd.under_construction_building_id();
+        room.EnqueueCommand(std::move(pending));
+        break;
+    }
+    case MsgId::TrainUnitCmd: {
+        rts::v1::TrainUnitCmd cmd;
+        if (!ParseInnerPayload(envelope, cmd)) {
+            SendCommandRejected(task.uid, room_id, envelope.client_seq(),
+                                rts::v1::ERROR_INVALID_REQUEST, "invalid TrainUnitCmd");
+            return;
+        }
+        PendingCommand pending;
+        pending.type = CommandType::Train;
+        pending.owner_uid = task.uid;
+        pending.client_seq = envelope.client_seq();
+        pending.target_entity = cmd.producer_building_id();
+        pending.aux_type = static_cast<std::uint32_t>(cmd.unit_type());
         room.EnqueueCommand(std::move(pending));
         break;
     }
