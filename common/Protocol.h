@@ -27,6 +27,9 @@ constexpr std::uint16_t kPacketCompressionGzip = 3 << 1;
 
 constexpr std::size_t kMaxPacketBodyLen = 64 * 1024;
 
+// 背压: 单连接发送队列上限(包数), 满则丢弃最旧的包(状态同步靠下一帧全量快照重新对齐)
+constexpr std::size_t kMaxSendQueueDepth = 2048;
+
 enum class MsgId : std::uint16_t {
     LoginReq = 10001,
     LoginRsp = 10002,

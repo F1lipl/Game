@@ -101,6 +101,15 @@ void GatewayLinkSession::PostSend(std::shared_ptr<SendNode> node) {
         return;
     }
 
+    // 背压: 队列满则丢最旧的包(状态同步靠下一帧全量快照重新对齐), 防过载内存爆炸
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("gateway link {} send queue full, dropping oldest (dropped {})",
+                         uuid_, send_dropped_);
+        }
+    }
+
     send_que_.push(std::move(node));
 
     if (is_writing_) {

@@ -465,6 +465,13 @@ void ClientSession::SendData(std::shared_ptr<SendNode> node) {
     auto ex = socket_.get_executor();
     // co_await boost::asio::dispatch(ex, boost::asio::use_awaitable);
 
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("backend conn link {} send queue full, dropping oldest (dropped {})",
+                         link_index_, send_dropped_);
+        }
+    }
     send_que_.push(std::move(node));
 
     if (is_writing_) {

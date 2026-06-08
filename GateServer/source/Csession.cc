@@ -219,6 +219,13 @@ void Csession::SendData(std::shared_ptr<SendNode> node){
         return;
     }
 
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("session {} send queue full, dropping oldest (dropped {})",
+                         uuid_, send_dropped_);
+        }
+    }
     send_que_.push(std::move(node));
     if(is_writing_)return;
     is_writing_ = true;

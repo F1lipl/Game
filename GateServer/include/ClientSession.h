@@ -36,6 +36,7 @@ private:
     WorkShard* shard_;
     boost::asio::steady_timer timer_;//心跳保活
     std::queue<std::shared_ptr<SendNode>>send_que_;//发送队列
+    std::uint64_t send_dropped_ {}; // 背压丢包计数
     boost::asio::ip::tcp::socket socket_;
     char* buffer_;
     uint8_t state_;
