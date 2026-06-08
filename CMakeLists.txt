@@ -84,6 +84,7 @@ add_library(GameServerLib STATIC
     GameServer/source/GatewayLinkSession.cc
     GameServer/source/LogicRouter.cc
     GameServer/source/LogicShard.cc
+    GameServer/source/MetricsServer.cc
     GameServer/source/MsgNode.cc
     GameServer/source/NetworkRouter.cc
     GameServer/source/NetworkShard.cc

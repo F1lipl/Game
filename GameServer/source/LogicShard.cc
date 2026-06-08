@@ -1,6 +1,7 @@
 #include"../include/LogicShard.h"
 #include"../include/LogicRouter.h"
 #include"../include/MsgNode.h"
+#include"../include/Metrics.h"
 #include "../../common/ProtoCodec.h"
 #include "rts.pb.h"
 
@@ -219,6 +220,7 @@ void LogicShard::postTask(LogicTask task) {
 }
 
 void LogicShard::handleTask(LogicTask task) {
+    metrics::commands_total.fetch_add(1, std::memory_order_relaxed);
     // 记录这个 uid 最近一次入站的"路由坐标", 回包时按它找对应网络 shard 的链路
     if (task.uid != 0) {
         uid_route_[task.uid] = task.origin;
@@ -261,10 +263,17 @@ boost::asio::awaitable<void> LogicShard::TickLoop() {
 }
 
 void LogicShard::TickRooms() {
+    const auto tick_t0 = std::chrono::steady_clock::now();
+    std::uint64_t active_rooms = 0;
+    std::uint64_t active_units = 0;
+
     for (auto& [room_id, room] : rooms_) {
         if (!room.Started() || room.IsGameOver()) {
             continue;
         }
+
+        ++active_rooms;
+        active_units += room.Units().size();
 
         room.ApplyPending();   // 应用本帧攒下的输入
 
@@ -292,6 +301,11 @@ void LogicShard::TickRooms() {
             BroadcastGameOver(room, winner_team);
         }
     }
+
+    const auto tick_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - tick_t0).count();
+    metrics::RecordTickUs(static_cast<std::uint32_t>(tick_us));
+    metrics::SetShardGauges(shard_id_, active_rooms, active_units);
 }
 
 void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
@@ -330,6 +344,7 @@ void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
 }
 
 void LogicShard::SendFullSnapshot(DungeonRoom& room) {
+    metrics::snapshots_total.fetch_add(1, std::memory_order_relaxed);
     rts::v1::SnapshotNtf ntf;
     ntf.set_room_id(room.RoomId());
     ntf.set_server_tick(room.ServerTick());
@@ -354,6 +369,7 @@ void LogicShard::SendFullSnapshot(DungeonRoom& room) {
 }
 
 void LogicShard::SendDelta(DungeonRoom& room) {
+    metrics::deltas_total.fetch_add(1, std::memory_order_relaxed);
     const auto tick = room.ServerTick();
     const auto player_uids = room.PlayerUids();
 

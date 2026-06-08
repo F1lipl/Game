@@ -1,6 +1,7 @@
 #include "../include/GatewayLinkSession.h"
 #include "../include/NetworkShard.h"
 #include"../include/MsgNode.h"
+#include"../include/Metrics.h"
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -104,6 +105,7 @@ void GatewayLinkSession::PostSend(std::shared_ptr<SendNode> node) {
     // 背压: 队列满则丢最旧的包(状态同步靠下一帧全量快照重新对齐), 防过载内存爆炸
     if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
         send_que_.pop();
+        metrics::send_drops_total.fetch_add(1, std::memory_order_relaxed);
         if ((++send_dropped_ & 0xFF) == 1) {
             spdlog::warn("gateway link {} send queue full, dropping oldest (dropped {})",
                          uuid_, send_dropped_);

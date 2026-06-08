@@ -1,6 +1,7 @@
 #include "../include/Const.h"
 #include "../include/GameServer.h"
 #include "../include/IniConfig.h"
+#include "../include/MetricsServer.h"
 
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
@@ -55,6 +56,10 @@ int main() {
         spdlog::info("GameServer listening on {}:{} (network_shards={})",
                      listen_ip, port_value, network_shards);
 
+        const auto metrics_port = ini.Get<int>("GameServer.metrics_port", 9100);
+        MetricsServer metrics(static_cast<unsigned short>(metrics_port));
+        metrics.Start();
+
         boost::asio::io_context sig_ioc;
         boost::asio::signal_set signals(sig_ioc, SIGINT, SIGTERM);
         signals.async_wait([&](const boost::system::error_code& ec, int signal_number) {
@@ -62,11 +67,13 @@ int main() {
                 return;
             }
             spdlog::info("GameServer received signal {}, stopping", signal_number);
+            metrics.Stop();
             server.Stop();
             sig_ioc.stop();
         });
 
         sig_ioc.run();
+        metrics.Stop();
         server.Stop();
         return 0;
     } catch (const std::exception& e) {
