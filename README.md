@@ -9,10 +9,9 @@ C++20 实现的权威状态同步(state-sync)RTS 游戏服务器。两进程:**G
 
 ## 1. 架构总览
 
-```
-客户端(Unity) ──TCP/8888──> GateServer ──内部长连接/50051──> GameServer
-                              (网关进程)                      (逻辑进程)
-```
+![架构图](docs/architecture.png)
+
+> 图源 [`docs/architecture.dot`](docs/architecture.dot)(Graphviz,可重新生成:`dot -Tpng docs/architecture.dot -o docs/architecture.png`)。
 
 ### GateServer(`GateServer/`)
 | 组件 | 职责 |
@@ -42,6 +41,30 @@ C++20 实现的权威状态同步(state-sync)RTS 游戏服务器。两进程:**G
 ---
 
 ## 2. 消息流转(读这一节就懂整个系统)
+
+一次玩家指令的端到端时序(GitHub 会把下面渲染成时序图):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant G as 网关 Csession
+    participant P as 连接池 ClientSession
+    participant N as NetworkShard
+    participant L as LogicShard (按 room_id)
+    C->>G: MoveCmd (裸消息)
+    G->>P: 注入 uid + GateToGameEnvelope
+    P->>N: 内部连接转发
+    N->>L: 解 envelope, 按 room_id 投 LogicTask(含 origin 路由坐标)
+    Note over L: 入队 pending_,不立即改世界
+    Note over L: 20Hz tick: ApplyPending → Step → 打快照/增量
+    L->>N: PostToNetwork(按 uid_route_ 分组到各网络 shard)
+    N->>P: 校验 generation, GameToGateEnvelope
+    P->>G: 解包, SendToUid(uid)
+    G->>C: WorldDelta / Snapshot
+```
+
+下面是对应的代码调用链(更细):
 
 ### 上行:客户端指令 → 生效
 
