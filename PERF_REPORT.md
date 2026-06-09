@@ -234,3 +234,21 @@ Csession / ClientSession)统一加上。
 - loadtest 的 "playing players" 计数器只认 envelope 的第一个 target_uid(同链路上 A/B 合包),
   会少计一半, 以服务器端 /metrics(rooms/units/tick)为准。
 - (复现: 临时 kStartUnitsPerPlayer=16 + loadtest 2 玩家对战驱动; 已还原, 不入主干。)
+
+## 端到端压测(网关 + 游戏服一起)
+
+前面各档都是直连 GameServer 模拟网关链路。这里用**真实客户端**经 GateServer 全链路压:
+每客户端一条到网关(:8888)的 TCP 连接, `LoginReq → CreateRoom → Ready → MoveCmd`;命令由
+网关注入 uid + 打包转发到 GameServer, 回包由网关拆包后转发回客户端。工具: `tools/e2e_loadtest.cc`。
+
+| 真实客户端 | login RTT avg/p95 | tick | GameServer CPU | GateServer CPU |
+|---|---|---|---|---|
+| 500  | 10 / 17 ms | 20Hz | 0.23 核 (14 MiB) | 0.27 核 (12 MiB) |
+| 1000 | 46 / 87 ms | 20Hz | 0.48 核 (15 MiB) | 0.58 核 (16 MiB) |
+| 2000 | 35 / 64 ms | 20Hz | 0.85 核 (19 MiB) | 1.00 核 (25 MiB) |
+
+- **全链路打通且 20Hz 稳**(2000 真实客户端,每人独立连接)。
+- **网关不是免费的**: Gate CPU 与 Game 同量级——每条消息过网关两次(客户端↔网关、网关↔游戏服)
+  并拆/装 GateToGameEnvelope。**系统总开销 ≈ Game + Gate(约翻倍)**, 这是只测 Game 看不到的部分。
+- login RTT 含"登录风暴"(数千客户端同时连入); 进入稳态后游戏 tick 稳定 20Hz。
+- 注意: 真实场景每玩家一条到网关的连接; 4 核机现被 Game + Gate + 压测器三方分摊。
