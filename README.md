@@ -15,7 +15,7 @@
 - **性能优化有据可依**:压测逐线程定位到"单网络线程瓶颈",做网络层分片后,同负载 **p95 延迟 5304ms → 21ms(~250×)、吞吐翻倍**。
 - **可靠性**:压测发现过载时发送队列无界增长(RSS 1.1GB),加**有界队列 + 背压**后同场景 **1.1GB → 108MiB,tick 从 9.6Hz 回到 19.8Hz**(优雅降级而非 OOM)。
 - **可观测性**:内置 Prometheus `/metrics`,暴露 tick p50/p99、吞吐、房间/单位数、背压丢包。
-- **真实负载验证**:2 玩家真实对战(16v16,采集+战斗+训练同跑)下,4 核机稳定支撑 **~4000 玩家 / 6.4 万单位 @ 20Hz,p95 6.6ms**。
+- **真实负载验证**:2 玩家真实对战(16v16,采集+战斗+训练同跑)下,4 核机稳定支撑 **~4000 玩家 / 6.4 万单位 @ 20Hz,p95 6.6ms**;**端到端**(真客户端经网关全链路)2000 客户端 @ 20Hz。
 - **工程化**:17 个单测(纯逻辑层)+ CI + 详细压测报告。
 
 ---
@@ -101,6 +101,17 @@
 | RSS | ~1100 MiB | **108 MiB** |
 | tick | 9.6 Hz(崩) | **19.8 Hz**(稳) |
 
+### 端到端(网关 + 游戏服一起)
+
+用真实客户端经 GateServer 全链路压(每客户端一条 TCP 连接:登录 → 建房 → 准备 → 移动,命令由网关注入 uid + 打包转发):
+
+| 真实客户端 | 端到端 tick | 登录 RTT p95 | GameServer CPU | GateServer CPU |
+|---|---|---|---|---|
+| 1000 | 20 Hz | 87 ms | 0.48 核 | 0.58 核 |
+| 2000 | 20 Hz | 64 ms | 0.85 核 | 1.00 核 |
+
+> 网关不是免费的:每条消息**过网关两次**(客户端↔网关、网关↔游戏服)并拆/装 envelope,所以 Gate CPU 与 Game 同量级,**系统总开销 ≈ Game + Gate**。这是只测游戏服看不到的部分。
+
 **诚实边界**:① 4 核机与压测器争 CPU,绝对上限偏保守;② 移动是直线/折线(方案A 将寻路放在客户端,服务器不跑 A\*),真实服务器权威寻路/碰撞会显著拉高单房成本、把容量降到几百房量级(会话制游戏常态:少量重对局/机 + 横向扩);③ 上述数字反映当前(较轻)per-unit 仿真,要测真实上限需独立压测机 + 更多核 + 更重 sim。
 
 ---
@@ -130,8 +141,10 @@ cmake --build --preset linux-release -j
 ./build/linux-release/GameServer    # 逻辑服 :50051, metrics :9100
 ./build/linux-release/GateServer    # 网关   :8888
 
-# 压测
+# 压测:直连游戏服(模拟网关链路,压逻辑/网络分片)
 ./build/linux-release/loadtest 127.0.0.1 50051 8 500 10 100
+# 压测:端到端真客户端(经网关全链路 Gate+Game)
+./build/linux-release/e2e_loadtest 127.0.0.1 8888 2000 10 100 2
 curl localhost:9100/metrics
 ```
 
@@ -147,7 +160,7 @@ proto/         rts.proto (协议定义)
 GateServer/    网关:Cserver / Csession / WorkShard / 连接池 / Router
 GameServer/    逻辑:GameServer / NetworkShard / LogicShard / DungeonRoom(纯逻辑) / Metrics
 tests/         Catch2 单测
-tools/         loadtest.cc(压测器)
+tools/         loadtest.cc(直连游戏服压测) / e2e_loadtest.cc(端到端真客户端压测)
 PERF_REPORT.md 完整分层压测报告
 ```
 
