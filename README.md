@@ -11,8 +11,6 @@ C++20 实现的权威状态同步(state-sync)RTS 游戏服务器。两进程:**G
 
 ![架构图](docs/architecture.png)
 
-> 图源 [`docs/architecture.dot`](docs/architecture.dot)(Graphviz,可重新生成:`dot -Tpng docs/architecture.dot -o docs/architecture.png`)。
-
 ### GateServer(`GateServer/`)
 | 组件 | 职责 |
 |---|---|
@@ -40,7 +38,7 @@ C++20 实现的权威状态同步(state-sync)RTS 游戏服务器。两进程:**G
 
 ---
 
-## 2. 消息流转(读这一节就懂整个系统)
+## 2. 消息流转
 
 一次玩家指令的端到端时序(GitHub 会把下面渲染成时序图):
 
@@ -64,7 +62,7 @@ sequenceDiagram
     G->>C: WorldDelta / Snapshot
 ```
 
-下面是对应的代码调用链(更细):
+下面是对应的代码调用链:
 
 ### 上行:客户端指令 → 生效
 
@@ -176,7 +174,7 @@ ctest --test-dir build/linux-debug --output-on-failure   # 17 个 Catch2 用例
 
 ---
 
-## 8. 怎么扩展
+## 8. 扩展
 
 - **加一个新指令**(如新的玩法命令):
   1. `proto/rts.proto` 加消息 + `MsgId`;`common/Protocol.h` 同步枚举。
