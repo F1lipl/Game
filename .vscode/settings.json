@@ -1,7 +1,0 @@
-{
-    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: Google, IndentWidth: 4 }",
-    "C_Cpp.errorSquiggles": "enabled",
-    "clangd.fallbackFlags": [
-        "-std=c++20"
-    ]
-}
