@@ -15,6 +15,7 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <spdlog/spdlog.h>
@@ -37,7 +38,52 @@ constexpr float kTickSeconds = 0.05f;
 constexpr std::uint64_t kFullSnapshotInterval = 20; // 每 20 个 tick 一次全量, 其余增量
 constexpr float kUnitSpeed = 3.0f;  // 单位/秒
 constexpr float kUnitHp = 100.0f;
-constexpr std::uint32_t kStartUnitsPerPlayer = 2;
+constexpr std::uint32_t kStartUnitsPerPlayer = 6;
+constexpr float kFormationColumnSpacing = 2.8f;
+constexpr float kFormationRowSpacing = 3.0f;
+
+struct InitialTeamLayout {
+    Vec3f barracks;
+    Vec3f unit_center;
+    Vec3f right;
+    Vec3f forward;
+};
+
+InitialTeamLayout InitialLayoutForTeam(std::uint32_t team) {
+    if (team == 0) {
+        return InitialTeamLayout{
+            Vec3f{19.3f, 0.0f, 43.71f},
+            Vec3f{31.0f, 0.0f, 50.0f},
+            Vec3f{1.0f, 0.0f, 0.0f},
+            Vec3f{0.0f, 0.0f, 1.0f}};
+    }
+
+    if (team == 1) {
+        return InitialTeamLayout{
+            Vec3f{118.63121f, 0.0f, 133.266647f},
+            Vec3f{111.708f, 0.0f, 128.335f},
+            Vec3f{-0.5801302f, 0.0f, 0.814503f},
+            Vec3f{-0.8144982f, 0.0f, -0.5801538f}};
+    }
+
+    const float offset = static_cast<float>(team - 1) * 30.0f;
+    return InitialTeamLayout{
+        Vec3f{118.63121f + offset, 0.0f, 133.266647f},
+        Vec3f{111.708f + offset, 0.0f, 128.335f},
+        Vec3f{1.0f, 0.0f, 0.0f},
+        Vec3f{0.0f, 0.0f, -1.0f}};
+}
+
+Vec3f Offset(const Vec3f& origin, const Vec3f& direction, float distance) {
+    return Vec3f{
+        origin.x + direction.x * distance,
+        origin.y + direction.y * distance,
+        origin.z + direction.z * distance};
+}
+
+float DirectionYaw(const Vec3f& direction) {
+    return std::atan2(direction.x, direction.z);
+}
 
 std::string_view BodyView(const std::shared_ptr<const RecvNode>& body) {
     if (!body || body->_data == nullptr || body->_total_len == 0) {
@@ -310,35 +356,42 @@ void LogicShard::TickRooms() {
 
 void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
     for (const auto& player : room.Players()) {
-        const float base_x = static_cast<float>(player.team) * 40.0f;
+        const auto layout = InitialLayoutForTeam(player.team);
+        const float facing_yaw = DirectionYaw(layout.forward);
 
-        Vec3f base;
-        base.x = base_x;
-        base.y = 0.0f;
-        base.z = 0.0f;
+        // The Unity map already owns the visible barracks. Keep only the
+        // authoritative crystal used for health, targeting and victory rules.
+        const Vec3f crystal = layout.barracks;
 
         // 主基地水晶 (胜负核心, 兼作资源站)
         room.SpawnBuilding(player.uid, player.team, kBuildingCrystal,
-                           base, 0.0f, /*under_construction=*/false);
+                           crystal, facing_yaw,
+                           /*under_construction=*/false);
 
         // 起始村民
         for (std::uint32_t i = 0; i < kStartUnitsPerPlayer; ++i) {
-            Vec3f pos;
-            pos.x = base_x + 3.0f + static_cast<float>(i) * 2.0f;
-            pos.y = 0.0f;
-            pos.z = 3.0f;
+            const auto row = static_cast<float>(i / 3);
+            const auto column = static_cast<float>(i % 3);
+            Vec3f pos = Offset(layout.unit_center,
+                               layout.right,
+                               (column - 1.0f) * kFormationColumnSpacing);
+            pos = Offset(pos,
+                         layout.forward,
+                         (row - 0.5f) * kFormationRowSpacing);
             room.SpawnUnit(player.uid, player.team, kUnitVillager, pos,
-                           kUnitHp, kUnitSpeed);
+                           kUnitHp, kUnitSpeed, facing_yaw);
         }
 
         // 基地附近的资源场: 食物(浆果) / 木头 / 金子
-        Vec3f food = base; food.x = base_x - 6.0f; food.z = 6.0f;
+        Vec3f food = Offset(crystal, layout.right, -6.0f);
+        food = Offset(food, layout.forward, 6.0f);
         room.SpawnResourceField(kRawBerries, food, 500);
 
-        Vec3f wood = base; wood.x = base_x + 6.0f; wood.z = 6.0f;
+        Vec3f wood = Offset(crystal, layout.right, 6.0f);
+        wood = Offset(wood, layout.forward, 6.0f);
         room.SpawnResourceField(kRawWood, wood, 500);
 
-        Vec3f gold = base; gold.x = base_x; gold.z = 10.0f;
+        Vec3f gold = Offset(crystal, layout.forward, 10.0f);
         room.SpawnResourceField(kRawGold, gold, 300);
     }
 }

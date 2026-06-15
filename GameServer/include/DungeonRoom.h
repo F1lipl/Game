@@ -409,7 +409,8 @@ public:
                             std::uint32_t unit_type,
                             const Vec3f& pos,
                             float hp,
-                            float speed) {
+                            float speed,
+                            float yaw = 0.0f) {
         const auto id = next_entity_id_++;
         Unit u;
         u.id = id;
@@ -419,7 +420,7 @@ public:
         u.pos = pos;
         u.target = pos;
         u.has_target = false;
-        u.yaw = 0.0f;
+        u.yaw = yaw;
         u.hp = hp;
         u.speed = speed;
         u.state = kStateIdle;
