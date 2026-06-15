@@ -1,10 +1,12 @@
 #include "../include/GatewayLinkSession.h"
 #include "../include/NetworkShard.h"
 #include"../include/MsgNode.h"
+#include"../include/Metrics.h"
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/uuid/random_generator.hpp>
@@ -37,6 +39,9 @@ void GatewayLinkSession::BindSlot(std::size_t slot_id, std::uint64_t generation)
 
 void GatewayLinkSession::Start() {
     Set_state(Session_state::Conected);
+
+    boost::system::error_code nodelay_ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
 
     auto self = shared_from_this();
 
@@ -97,6 +102,16 @@ void GatewayLinkSession::PostSend(std::shared_ptr<SendNode> node) {
         return;
     }
 
+    // 背压: 队列满则丢最旧的包(状态同步靠下一帧全量快照重新对齐), 防过载内存爆炸
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        metrics::send_drops_total.fetch_add(1, std::memory_order_relaxed);
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("gateway link {} send queue full, dropping oldest (dropped {})",
+                         uuid_, send_dropped_);
+        }
+    }
+
     send_que_.push(std::move(node));
 
     if (is_writing_) {
@@ -151,33 +166,12 @@ boost::asio::awaitable<void> GatewayLinkSession::handle_read() {
 }
 
 boost::asio::awaitable<void> GatewayLinkSession::start_heartbeat() {
-    boost::system::error_code ec;
-
-    while (!is_closing() && state_ != Session_state::Closed) {
-        timer_.expires_after(HEART_TIMEOUT);
-        ec.clear();
-
-        co_await timer_.async_wait(
-            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-
-        if (ec == boost::asio::error::operation_aborted) {
-            continue;
-        }
-
-        if (ec) {
-            spdlog::error("gateway link session {} heartbeat error {}", uuid_, ec.message());
-            continue;
-        }
-
-        spdlog::warn("gateway link session {} heartbeat timeout", uuid_);
-        Close();
-        co_return;
-    }
+    // Gate links do not send protocol heartbeats yet. Keep idle backend links open
+    // until Ping/Pong or GateLinkHello handling is implemented.
+    co_return;
 }
 
 boost::asio::awaitable<std::size_t> GatewayLinkSession::ReadHead() {
-    std::memset(buffer_.get(), 0, Buffer_size);
-
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_.get(), HEAD_TOTAL_LEN),
@@ -243,8 +237,6 @@ boost::asio::awaitable<bool> GatewayLinkSession::ReadData(std::size_t len) {
     if (len == 0) {
         co_return true;
     }
-
-    std::memset(buffer_.get(), 0, Buffer_size);
 
     auto [ec, recv_len] = co_await boost::asio::async_read(
         socket_,

@@ -56,6 +56,50 @@ std::shared_ptr<SendNode> BuildPacket(std::uint16_t msg_id,
         flags);
 }
 
+std::shared_ptr<SendNode> BuildGateLinkHello(std::uint32_t gate_id,
+                                             std::uint32_t link_index) {
+    rts::v1::GateLinkHello hello;
+    hello.set_gate_id(gate_id);
+    hello.set_link_index(link_index);
+
+    std::string payload;
+    if (!SerializeMessage(hello, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::GateLinkHello),
+        payload);
+}
+
+std::shared_ptr<SendNode> BuildPingReq(std::uint64_t client_time_ms) {
+    rts::v1::PingReq ping;
+    ping.set_client_time_ms(client_time_ms);
+
+    std::string payload;
+    if (!SerializeMessage(ping, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::PingReq),
+        payload);
+}
+
+std::shared_ptr<SendNode> BuildClientDisconnectedNtf(std::uint64_t uid) {
+    rts::v1::ClientDisconnectedNtf ntf;
+    ntf.set_uid(uid);
+
+    std::string payload;
+    if (!SerializeMessage(ntf, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::ClientDisconnectedNtf),
+        payload);
+}
+
 std::shared_ptr<SendNode> BuildGateToGameEnvelope(const Csession& session,
                                                   std::uint16_t inner_msg_id,
                                                   const RecvNode& body) {
@@ -132,9 +176,9 @@ bool ForwardGameToClients(WorkShard& shard, const RecvNode& body) {
 std::uint64_t MakeLoginUid(const Csession& session,
                            const std::string& account,
                            const std::string& token) {
-    const auto key = account.empty()
-        ? session.get_uuid()
-        : account + ":" + token;
+    // 每条连接一个唯一 uid: 始终混入 session uuid。
+    // 这样同一台机器多开客户端 / 相同账号也不会得到相同 uid (account 仅作显示名)。
+    const auto key = account + ":" + token + ":" + session.get_uuid();
 
     auto uid = static_cast<std::uint64_t>(std::hash<std::string>{}(key));
     if (uid == 0) {

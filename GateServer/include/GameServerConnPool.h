@@ -2,6 +2,8 @@
 #include "WorkShard.h"
 #include"Const.h"
 #include<boost/asio.hpp>
+#include <vector>
+
 class ClientSession;
 class WorkShard;
 class SendNode;
@@ -22,8 +24,9 @@ public:
     ConnPtr GetAvailableConn();
 
 private:
-    ConnPtr CreateConn();
+    ConnPtr CreateConn(std::size_t slot_index);
     bool IsConnAvailable(const ConnPtr& conn) const;
+    bool IsConnPendingOrAvailable(const ConnPtr& conn) const;
     ConnPtr SelectConnUnsafe();
 
     boost::asio::awaitable<void> detection();

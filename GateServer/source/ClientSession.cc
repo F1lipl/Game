@@ -5,20 +5,51 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <chrono>
 #include <spdlog/spdlog.h>
+#include "../../common/ProtoCodec.h"
+#include"../include/GateProtocol.h"
 #include"../include/MsgNode.h"
 #include "../include/Router.h"
+#include "rts.pb.h"
 
-ClientSession::ClientSession(boost::asio::io_context &ioc,WorkShard* shard):
+#include <string_view>
+
+namespace {
+
+constexpr std::chrono::seconds kBackendHeartbeatInterval{5};
+constexpr std::chrono::seconds kBackendHeartbeatTimeout{15};
+
+std::uint64_t NowUnixMs() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+std::string_view BodyView(const RecvNode& body) {
+    if (body._data == nullptr || body._total_len == 0) {
+        return {};
+    }
+
+    return std::string_view(body._data, body._total_len);
+}
+
+} // namespace
+
+ClientSession::ClientSession(boost::asio::io_context &ioc,
+                             WorkShard* shard,
+                             std::uint32_t link_index):
 socket_(ioc),
 buffer_(new char[Buffer_size]),
 state_(ClientSession_state::Connecting),
 shard_(shard),
 timer_(ioc),
 is_writing_(false),
+last_pong_time_(std::chrono::steady_clock::now()),
+link_index_(link_index),
 head_(std::make_shared<RecvNode>(HEAD_TOTAL_LEN, 0)),
 body_(std::make_shared<RecvNode>(Buffer_size, 0)) {}
 
@@ -45,17 +76,22 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
         !ini.Load("../config/config.ini", &err) &&
         !ini.Load("/home/cmr/workspace/project/Gamer/config/config.ini", &err)) {
         spdlog::error("client session load config.ini err {}", err);
+        state_ = ClientSession_state::Error;
+        close();
         co_return;
     }
 
     try {
         int port_value = ini.Require<int>("GameServer.port");
+        gate_id_ = ini.Get<std::uint32_t>("GateServer.gate_id", 1);
         std::string ip = ini.Get<std::string>(
             "GameServer.ip",
             ini.Get<std::string>("GameServer.host", "127.0.0.1"));
 
         if (port_value < 0 || port_value > 65535) {
             spdlog::error("invalid port: {}", port_value);
+            state_ = ClientSession_state::Error;
+            close();
             co_return;
         }
 
@@ -65,10 +101,48 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
             static_cast<unsigned short>(port_value)
         );
 
-        co_await socket_.async_connect(ep, boost::asio::use_awaitable);
-        state_ = ClientSession_state::Connected;
-        last_recv_time_ = std::chrono::steady_clock::now();
         auto self = shared_from_this();
+        timer_.expires_after(std::chrono::seconds(5));
+        timer_.async_wait([self, ip, port_value](const boost::system::error_code& ec) {
+            if (ec || self->state_ != ClientSession_state::Connecting) {
+                return;
+            }
+
+            spdlog::warn("connect to {}:{} timeout", ip, port_value);
+            self->close();
+        });
+
+        boost::system::error_code connect_ec;
+        co_await socket_.async_connect(
+            ep,
+            boost::asio::redirect_error(boost::asio::use_awaitable, connect_ec));
+
+        boost::system::error_code cancel_ec;
+        timer_.cancel(cancel_ec);
+
+        if (connect_ec) {
+            if (state_ != ClientSession_state::closing &&
+                state_ != ClientSession_state::closed) {
+                spdlog::warn("connect to {}:{} failed: {}", ip, port_value, connect_ec.message());
+                state_ = ClientSession_state::Error;
+                close();
+            }
+            co_return;
+        }
+
+        if (state_ == ClientSession_state::closing ||
+            state_ == ClientSession_state::closed) {
+            co_return;
+        }
+
+        state_ = ClientSession_state::Connected;
+        boost::system::error_code nodelay_ec;
+        socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+        last_recv_time_ = std::chrono::steady_clock::now();
+        last_pong_time_ = last_recv_time_;
+        SendGateLinkHello();
+        SendPing();
+
         boost::asio::co_spawn(
             socket_.get_executor(),
             [self]() -> boost::asio::awaitable<void> {
@@ -81,10 +155,41 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
                 co_await self->keep_alive();
             },
             boost::asio::detached);
-        spdlog::info("connect to {}:{} success", ip, port_value);
+        spdlog::debug("connect to {}:{} success", ip, port_value);
     } catch (const std::exception& e) {
         spdlog::error("handleconnect exception: {}", e.what());
+        if (state_ != ClientSession_state::closing &&
+            state_ != ClientSession_state::closed) {
+            state_ = ClientSession_state::Error;
+            close();
+        }
     }
+}
+
+void ClientSession::SendGateLinkHello() {
+    auto packet = gate::protocol::BuildGateLinkHello(gate_id_, link_index_);
+    if (!packet) {
+        spdlog::warn("build GateLinkHello failed, gate_id={}, link_index={}",
+                     gate_id_, link_index_);
+        return;
+    }
+
+    SendData(std::move(packet));
+}
+
+void ClientSession::SendPing() {
+    auto packet = gate::protocol::BuildPingReq(NowUnixMs());
+    if (!packet) {
+        spdlog::warn("build backend PingReq failed");
+        return;
+    }
+
+    SendData(std::move(packet));
+}
+
+void ClientSession::MarkPongReceived() {
+    last_pong_time_ = std::chrono::steady_clock::now();
+    last_recv_time_ = last_pong_time_;
 }
 
 
@@ -154,7 +259,6 @@ boost::asio::awaitable<void> ClientSession::handleconnect() {
 // }
 
 boost::asio::awaitable<void> ClientSession::keep_alive() {
-    auto self=shared_from_this();
     boost::system::error_code ec;
     while (true) {
         co_await boost::asio::dispatch(socket_.get_executor(), boost::asio::use_awaitable);
@@ -164,32 +268,12 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
             co_return;
         }
 
-        if (state_ == ClientSession_state::Busy) {
-            timer_.expires_after(std::chrono::seconds(5));
-            ec.clear();
-            co_await timer_.async_wait(
-                boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-
-            if (ec == boost::asio::error::operation_aborted) {
-                co_return;
-            }
-            if (ec) {
-               state_= ClientSession_state::Error;
-                close();
-                co_return;
-            }
-
-            continue;
-        }
-
-        timer_.expires_after(KEEP_ALIVE_TIME);
+        timer_.expires_after(kBackendHeartbeatInterval);
         ec.clear();
         co_await timer_.async_wait(
             boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
         if (ec == boost::asio::error::operation_aborted) {
-            spdlog::info("timer canceled, keep-alive exit");
-            close();
             co_return;
         }
         if (ec) {
@@ -198,14 +282,16 @@ boost::asio::awaitable<void> ClientSession::keep_alive() {
             co_return;
         }
 
-        auto now = std::chrono::steady_clock::now();
-        if (now - last_recv_time_ > std::chrono::seconds(15)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_pong_time_ > kBackendHeartbeatTimeout) {
+            spdlog::warn("backend heartbeat timeout, gate_id={}, link_index={}",
+                         gate_id_, link_index_);
             state_=ClientSession_state::Timeout;
             close();
             co_return;
         }
-        //
-        // 如果协议要求主动发心跳包，这里发送
+
+        SendPing();
     }
 }
 
@@ -233,6 +319,20 @@ boost::asio::awaitable<void> ClientSession::HandleRead(){
         }
         last_recv_time_=std::chrono::steady_clock::now();
 
+        if (head_ &&
+            head_->MsgId() == static_cast<std::uint16_t>(rts::protocol::MsgId::PongRsp)) {
+            rts::v1::PongRsp pong;
+            if (!rts::protocol::ParseProtoFromBytes(BodyView(*body_), pong)) {
+                spdlog::warn("parse backend PongRsp failed");
+                continue;
+            }
+
+            MarkPongReceived();
+            spdlog::debug("backend pong received, gate_id={}, link_index={}, client_time_ms={}",
+                          gate_id_, link_index_, pong.client_time_ms());
+            continue;
+        }
+
         BackendIngressRouter::BackendMsgContext ctx;
         ctx.shard = shard_;
         ctx.backend_session = shared_from_this();
@@ -246,7 +346,6 @@ boost::asio::awaitable<void> ClientSession::HandleRead(){
 }
 
 boost::asio::awaitable<size_t>ClientSession::Readhead(){
-   std::memset(buffer_, 0, Buffer_size);
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, HEAD_TOTAL_LEN),
@@ -301,8 +400,8 @@ boost::asio::awaitable<size_t>ClientSession::Readhead(){
     head_ = std::make_shared<RecvNode>(HEAD_TOTAL_LEN, msg_id, flags);
     std::memcpy(head_->_data, buffer_, HEAD_TOTAL_LEN);
 
-    spdlog::info("session recv package, msg id {}, flags {}, data len {}",
-                 msg_id, flags, data_len);
+    spdlog::debug("backend session recv package, msg id {}, flags {}, data len {}",
+                  msg_id, flags, data_len);
 
     co_return static_cast<std::size_t>(data_len);
 }
@@ -317,7 +416,6 @@ boost ::asio::awaitable<bool> ClientSession::ReadData(size_t len){
         co_return true;
     }
 
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, len),
@@ -367,6 +465,13 @@ void ClientSession::SendData(std::shared_ptr<SendNode> node) {
     auto ex = socket_.get_executor();
     // co_await boost::asio::dispatch(ex, boost::asio::use_awaitable);
 
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("backend conn link {} send queue full, dropping oldest (dropped {})",
+                         link_index_, send_dropped_);
+        }
+    }
     send_que_.push(std::move(node));
 
     if (is_writing_) {

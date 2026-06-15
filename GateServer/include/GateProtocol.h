@@ -17,6 +17,14 @@ std::shared_ptr<SendNode> BuildPacket(std::uint16_t msg_id,
                                       const std::string& payload,
                                       std::uint16_t flags = rts::protocol::kPacketFlagNone);
 
+std::shared_ptr<SendNode> BuildGateLinkHello(std::uint32_t gate_id,
+                                             std::uint32_t link_index);
+
+std::shared_ptr<SendNode> BuildPingReq(std::uint64_t client_time_ms);
+
+// 客户端断开时, 网关通知游戏服回收该 uid 的房间状态
+std::shared_ptr<SendNode> BuildClientDisconnectedNtf(std::uint64_t uid);
+
 std::shared_ptr<SendNode> BuildGateToGameEnvelope(const Csession& session,
                                                   std::uint16_t inner_msg_id,
                                                   const RecvNode& body);
@@ -33,4 +41,3 @@ std::uint64_t MakeLoginUid(const Csession& session,
                            const std::string& token);
 
 } // namespace gate::protocol
-

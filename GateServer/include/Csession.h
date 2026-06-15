@@ -65,9 +65,10 @@ private:
     char* buffer_;
     boost::asio::steady_timer timer_;
     uint8_t state_;//状态
-    std::shared_ptr<MsgNode>Recv_node_;//包头的缓冲区
+    std::shared_ptr<RecvNode>Recv_node_;//包头的缓冲区
     std::shared_ptr<RecvNode>data_node_;//数据的缓冲区
     std::queue<std::shared_ptr<SendNode>>send_que_;
+    std::uint64_t send_dropped_ {}; // 背压丢包计数
     bool is_writing_;
     uid uid_;
 };

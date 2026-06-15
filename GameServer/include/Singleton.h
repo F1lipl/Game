@@ -1,7 +1,6 @@
 #include"Const.h"
 #include <memory>
 #include <mutex>
-#include <spdlog/spdlog.h>
 
 
 template<typename T>
@@ -10,14 +9,12 @@ public:
     static std::shared_ptr<T> Getinstance(){
         static std::once_flag flag;
         std::call_once(flag,[&](){
-            instance_=std::make_shared<T>(new T);
+            instance_=std::shared_ptr<T>(new T);
         });
         return instance_;
     }
 
-     ~Singleton() {
-        spdlog::info("this is instance distruct");
-     }
+     ~Singleton() = default;
 
      T* GetAddress(){
         return instance_.get();

@@ -39,6 +39,12 @@ void LogicRouter::Init() {
         }
     });
 
+    Register(MsgId::ClientDisconnectedNtf, [](LogicShard* shard, LogicTask task) {
+        if (shard) {
+            shard->HandleClientDisconnected(std::move(task));
+        }
+    });
+
     auto register_command = [this](MsgId msg_id) {
         Register(msg_id, [](LogicShard* shard, LogicTask task) {
             if (shard) {

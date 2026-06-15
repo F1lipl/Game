@@ -84,6 +84,7 @@ add_library(GameServerLib STATIC
     GameServer/source/GatewayLinkSession.cc
     GameServer/source/LogicRouter.cc
     GameServer/source/LogicShard.cc
+    GameServer/source/MetricsServer.cc
     GameServer/source/MsgNode.cc
     GameServer/source/NetworkRouter.cc
     GameServer/source/NetworkShard.cc
@@ -143,3 +144,59 @@ add_executable(GateServer
 target_link_libraries(GateServer PRIVATE
     GateServerLib
 )
+
+# ---- Load testing tool ----
+add_executable(loadtest
+    tools/loadtest.cc
+)
+
+target_include_directories(loadtest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(loadtest PRIVATE
+    rts_proto
+    Boost::system
+    Threads::Threads
+)
+
+# End-to-end load tool (acts as real clients against the GateServer)
+add_executable(e2e_loadtest
+    tools/e2e_loadtest.cc
+)
+
+target_include_directories(e2e_loadtest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(e2e_loadtest PRIVATE
+    rts_proto
+    Boost::system
+    Threads::Threads
+)
+
+# ---- Tests ----
+# DungeonRoom is pure simulation logic (no proto/boost), so the test target
+# only needs Catch2 + the GameServer headers.
+find_package(Catch2 3 QUIET)
+if(Catch2_FOUND)
+    enable_testing()
+
+    add_executable(DungeonRoomTest
+        tests/DungeonRoomTest.cc
+    )
+
+    target_include_directories(DungeonRoomTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/GameServer/include
+    )
+
+    target_link_libraries(DungeonRoomTest PRIVATE
+        Catch2::Catch2WithMain
+    )
+
+    list(APPEND CMAKE_MODULE_PATH ${Catch2_DIR})
+    include(Catch)
+    catch_discover_tests(DungeonRoomTest)
+else()
+    message(STATUS "Catch2 not found; skipping tests")
+endif()

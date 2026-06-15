@@ -27,6 +27,7 @@ public:
     void start();
     void stop();
     void PostMessage(std::shared_ptr<SendNode>);
+    void NotifyGameServerDisconnect(uid id); // 客户端断开时通知游戏服回收房间
     bool SendToUid(uid id, std::shared_ptr<SendNode> node);
     std::size_t Broadcast(std::shared_ptr<SendNode> node);
     std::shared_ptr<Csession> FindSessionByUid(uid id);

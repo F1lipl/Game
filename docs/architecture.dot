@@ -1,0 +1,56 @@
+digraph arch {
+  rankdir=TB;
+  bgcolor="white";
+  graph [fontname="Helvetica", labeljust=l, fontsize=12];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica",
+         fontsize=11, fillcolor="#eef3fb", color="#4a6fa5"];
+  edge  [fontname="Helvetica", fontsize=10, color="#555555"];
+
+  subgraph cluster_client {
+    label="Client (Unity)"; style="rounded"; color="#999999";
+    players [label="Players × N\n(one TCP connection each)",
+             fillcolor="#fff3e0", color="#cc8a3a"];
+  }
+
+  subgraph cluster_gate {
+    label="GateServer  ·  gateway process"; style="rounded"; color="#777777";
+    acc [label="Cserver\nacceptor  :8888"];
+    subgraph cluster_ws {
+      label="WorkShard pool  ·  N threads (1 io_context each)";
+      style="rounded,dashed"; color="#bbbbbb";
+      csess [label="Csession\nclient session / login / heartbeat"];
+      cpool [label="GameServerConnPool\nClientSession link pool → Game"];
+    }
+  }
+
+  subgraph cluster_game {
+    label="GameServer  ·  logic process"; style="rounded"; color="#777777";
+    subgraph cluster_net {
+      label="NetworkShard × N  ·  1 thread each  ·  SO_REUSEPORT :50051";
+      style="rounded,dashed"; color="#bbbbbb";
+      glink [label="GatewayLinkSession\n+ slots_ (gateway links)"];
+    }
+    subgraph cluster_logic {
+      label="LogicShard × M  ·  1 thread each  ·  20Hz tick";
+      style="rounded,dashed"; color="#bbbbbb";
+      rooms [label="rooms_ : DungeonRoom\n(authoritative world state)"];
+      route [label="uid_route_\n{net_shard, link, generation}"];
+    }
+    metrics [label="MetricsServer\n/metrics  :9100",
+             fillcolor="#e8f5e9", color="#5a9a5a"];
+  }
+
+  players -> acc   [label="TCP · 10B header + protobuf"];
+  acc     -> csess;
+  csess   -> cpool [label="inject uid + wrap"];
+  cpool   -> glink [label="GateToGameEnvelope", penwidth=2.0];
+  glink   -> rooms [label="OnPacket → shard by room_id"];
+  route   -> rooms [style=dotted, dir=both, label="reply route"];
+  rooms   -> glink [label="tick: snapshot / delta", style=dashed];
+  glink   -> cpool [label="GameToGateEnvelope", penwidth=2.0];
+  cpool   -> csess [label="SendToUid(uid)"];
+  csess   -> players [label="downstream", constraint=false];
+
+  label="\nRTS Game Server — Architecture (lock-free shard-actor)\n";
+  fontsize=14;
+}

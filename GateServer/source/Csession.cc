@@ -78,6 +78,9 @@ void Csession::close() {
 
     Set_state(Session_state::Closed);
     if (shard_) {
+        if (current_uid != 0) {
+            shard_->NotifyGameServerDisconnect(current_uid);
+        }
         shard_->delete_uid(current_uid);
         shard_->delete_user_session(uuid_);
     }
@@ -108,6 +111,9 @@ void Csession::BindUid(uid id) {
 
 void Csession::start() {
     Set_state(Session_state::Conected);
+
+    boost::system::error_code nodelay_ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
 
     auto self = shared_from_this();
     boost::asio::co_spawn(
@@ -179,14 +185,18 @@ boost::asio::awaitable<void> Csession::start_heartbeat() {
 }
 
 boost::asio::awaitable<std::size_t> Csession::ReadHead() {
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, length] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, HEAD_TOTAL_LEN),
         boost::asio::as_tuple(boost::asio::use_awaitable));
 
     if (ec) {
-        spdlog::error("session {} read head error {}", uuid_, ec.message());
+        // EOF / 连接重置 = 客户端正常断开, 不是错误; 触发 close() 走房间回收
+        if (ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset) {
+            spdlog::info("session {} disconnected: {}", uuid_, ec.message());
+        } else {
+            spdlog::error("session {} read head error {}", uuid_, ec.message());
+        }
         close();
         co_return 0;
     }
@@ -250,14 +260,17 @@ boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
         co_return true;
     }
 
-    std::memset(buffer_, 0, Buffer_size);
     auto [ec, recv_data_len] = co_await boost::asio::async_read(
         socket_,
         boost::asio::buffer(buffer_, len),
         boost::asio::as_tuple(boost::asio::use_awaitable));
 
     if (ec) {
-        spdlog::error("session {} read data error {}", uuid_, ec.message());
+        if (ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset) {
+            spdlog::info("session {} disconnected: {}", uuid_, ec.message());
+        } else {
+            spdlog::error("session {} read data error {}", uuid_, ec.message());
+        }
         close();
         co_return false;
     }
@@ -280,6 +293,13 @@ void Csession::SendData(std::shared_ptr<SendNode> node){
         return;
     }
 
+    if (send_que_.size() >= rts::protocol::kMaxSendQueueDepth) {
+        send_que_.pop();
+        if ((++send_dropped_ & 0xFF) == 1) {
+            spdlog::warn("session {} send queue full, dropping oldest (dropped {})",
+                         uuid_, send_dropped_);
+        }
+    }
     send_que_.push(std::move(node));
     if(is_writing_)return;
     is_writing_ = true;

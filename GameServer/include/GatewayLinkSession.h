@@ -88,9 +88,10 @@ private:
     std::uint8_t state_ {Session_state::Invalid};
 
     std::unique_ptr<char[]> buffer_;
-    std::shared_ptr<MsgNode> Recv_node_;
+    std::shared_ptr<RecvNode> Recv_node_;
     std::shared_ptr<RecvNode> data_node_;
 
     std::queue<std::shared_ptr<SendNode>> send_que_;
+    std::uint64_t send_dropped_ {}; // 背压丢包计数
     bool is_writing_ {false};
 };

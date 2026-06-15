@@ -19,7 +19,7 @@ void GameServerConnPool::Init() {
     sessions_.resize(conn_cnt_);
 
     for (std::size_t i = 0; i < conn_cnt_; ++i) {
-        auto conn = CreateConn();
+        auto conn = CreateConn(i);
         sessions_[i] = conn;
 
         if (!conn) {
@@ -48,8 +48,11 @@ void GameServerConnPool::Stop() {
     initialized_ = false;
 }
 
-GameServerConnPool::ConnPtr GameServerConnPool::CreateConn() {
-    auto conn = std::make_shared<ClientSession>(ioc_, shard_);
+GameServerConnPool::ConnPtr GameServerConnPool::CreateConn(std::size_t slot_index) {
+    auto conn = std::make_shared<ClientSession>(
+        ioc_,
+        shard_,
+        static_cast<std::uint32_t>(slot_index));
     conn->start();
     return conn;
 }
@@ -61,6 +64,17 @@ bool GameServerConnPool::IsConnAvailable(const ConnPtr& conn) const {
 
     auto state = conn->get_state();
     return state == ClientSession_state::Connected ||
+           state == ClientSession_state::Busy;
+}
+
+bool GameServerConnPool::IsConnPendingOrAvailable(const ConnPtr& conn) const {
+    if (!conn) {
+        return false;
+    }
+
+    auto state = conn->get_state();
+    return state == ClientSession_state::Connecting ||
+           state == ClientSession_state::Connected ||
            state == ClientSession_state::Busy;
 }
 
@@ -125,18 +139,22 @@ boost::asio::awaitable<void> GameServerConnPool::detection() {
         }
 
         for (std::size_t i = 0; i < conn_cnt_; ++i) {
-            if (IsConnAvailable(sessions_[i])) {
+            if (IsConnPendingOrAvailable(sessions_[i])) {
                 continue;
             }
 
-            auto new_conn = CreateConn();
+            if (sessions_[i]) {
+                sessions_[i]->close();
+            }
+
+            auto new_conn = CreateConn(i);
             if (!new_conn) {
                 spdlog::warn("GameServerConnPool rebuild slot {} failed", i);
                 continue;
             }
 
             sessions_[i] = new_conn;
-            spdlog::info("GameServerConnPool rebuild slot {} success", i);
+            spdlog::debug("GameServerConnPool rebuild slot {} scheduled", i);
         }
     }
 }

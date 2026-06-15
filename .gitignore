@@ -1,3 +1,13 @@
+# 构建产物
 build/
 generated/cpp/*.pb.cc
 generated/cpp/*.pb.h
+
+# 编辑器 / 工具缓存(不该上传)
+.cache/
+.vscode/
+compile_commands.json
+*.user
+
+# OS
+.DS_Store
