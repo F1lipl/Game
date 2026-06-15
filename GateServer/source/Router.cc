@@ -7,6 +7,7 @@
 #include "../../common/ProtoCodec.h"
 #include "rts.pb.h"
 
+#include <chrono>
 #include <cstdint>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -77,6 +78,32 @@ void HandleLoginReq(const ClientIngressRouter::MsgContext& ctx) {
         payload));
 }
 
+// 客户端心跳: 收到 PingReq 直接在网关回 PongRsp (无需转发到游戏服)。
+// 收到任意包都会重置 30s 收包超时, 所以这同时起到保活作用; 回 Pong 还能让客户端算延迟。
+void HandlePingReq(const ClientIngressRouter::MsgContext& ctx) {
+    if (!ctx.session || !ctx.body) {
+        return;
+    }
+
+    rts::v1::PingReq ping;
+    rts::protocol::ParseProtoFromBytes(BodyView(*ctx.body), ping); // 空 body 也接受
+
+    rts::v1::PongRsp pong;
+    pong.set_client_time_ms(ping.client_time_ms());
+    pong.set_server_time_ms(static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count()));
+
+    std::string payload;
+    if (!pong.SerializeToString(&payload)) {
+        return;
+    }
+
+    SendToClient(ctx, gate::protocol::BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::PongRsp), payload));
+}
+
 void ForwardClientMsgToGame(std::uint16_t msgid,
                             const ClientIngressRouter::MsgContext& ctx) {
     if (!ctx.shard || !ctx.session || !ctx.body) {
@@ -118,6 +145,11 @@ void ClientIngressRouter::Init() {
     RegisterCallback(static_cast<std::uint16_t>(rts::protocol::MsgId::LoginReq),
         [](const MsgContext& ctx) {
         HandleLoginReq(ctx);
+    });
+
+    RegisterCallback(static_cast<std::uint16_t>(rts::protocol::MsgId::PingReq),
+        [](const MsgContext& ctx) {
+        HandlePingReq(ctx);
     });
 
     RegisterForward(static_cast<std::uint16_t>(rts::protocol::MsgId::CreateRoomReq));
