@@ -717,15 +717,48 @@ private:
                    const std::vector<std::uint64_t>& unit_ids,
                    const Vec3f& target,
                    const std::vector<Vec3f>& path = {}) {
+        Vec3f center {};
+        std::size_t selected_count = 0;
+        for (auto id : unit_ids) {
+            auto it = units_.find(id);
+            if (it == units_.end() || it->second.owner_uid != owner_uid) {
+                continue;
+            }
+            center.x += it->second.pos.x;
+            center.y += it->second.pos.y;
+            center.z += it->second.pos.z;
+            ++selected_count;
+        }
+
+        if (selected_count == 0) {
+            return;
+        }
+
+        const float inverse_count = 1.0f / static_cast<float>(selected_count);
+        center.x *= inverse_count;
+        center.y *= inverse_count;
+        center.z *= inverse_count;
+
         for (auto id : unit_ids) {
             auto it = units_.find(id);
             if (it == units_.end() || it->second.owner_uid != owner_uid) {
                 continue;
             }
             auto& u = it->second;
+            const Vec3f formation_offset {
+                u.pos.x - center.x,
+                0.0f,
+                u.pos.z - center.z};
             ClearWorkerTask(u);
-            u.target = target;
+            u.target = Vec3f{
+                target.x + formation_offset.x,
+                target.y,
+                target.z + formation_offset.z};
             u.path = path;       // 方案A: 沿 waypoints 走; 空则直线走 target
+            for (auto& waypoint : u.path) {
+                waypoint.x += formation_offset.x;
+                waypoint.z += formation_offset.z;
+            }
             u.path_index = 0;
             u.has_target = true;
             u.attack_target = 0; // 移动取消攻击
