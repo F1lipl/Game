@@ -176,9 +176,9 @@ bool ForwardGameToClients(WorkShard& shard, const RecvNode& body) {
 std::uint64_t MakeLoginUid(const Csession& session,
                            const std::string& account,
                            const std::string& token) {
-    const auto key = account.empty()
-        ? session.get_uuid()
-        : account + ":" + token;
+    // 每条连接一个唯一 uid: 始终混入 session uuid。
+    // 这样同一台机器多开客户端 / 相同账号也不会得到相同 uid (account 仅作显示名)。
+    const auto key = account + ":" + token + ":" + session.get_uuid();
 
     auto uid = static_cast<std::uint64_t>(std::hash<std::string>{}(key));
     if (uid == 0) {
