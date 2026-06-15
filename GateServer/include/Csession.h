@@ -57,6 +57,9 @@ public:
             spdlog::error("session {} close error {}",uuid_,ec.message());
         }
         Set_state(Session_state::Closed);
+        if (uid_ != 0 && shard_) {
+            shard_->NotifyGameServerDisconnect(uid_); // 通知游戏服回收该玩家房间
+        }
         shard_->delete_uid(uid_);
         shard_->delete_user_session(uuid_);
         spdlog::info("session {} is closed",uuid_);

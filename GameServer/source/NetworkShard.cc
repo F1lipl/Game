@@ -240,6 +240,9 @@ void NetworkShard::OnPacket(LinkId link_id,
     case MsgId::PingReq:
         HandlePingReq(link_id, std::move(body));
         break;
+    case MsgId::ClientDisconnectedNtf:
+        HandleClientDisconnected(std::move(body));
+        break;
     case MsgId::CreateRoomReq:
     case MsgId::JoinRoomReq:
     case MsgId::LeaveRoomReq:
@@ -324,6 +327,27 @@ void NetworkShard::HandlePingReq(LinkId link_id,
     }
 
     SendToGatewayLink(link_id, BuildPacket(MsgId::PongRsp, payload));
+}
+
+void NetworkShard::HandleClientDisconnected(std::shared_ptr<const RecvNode> body) {
+    rts::v1::ClientDisconnectedNtf ntf;
+    if (!rts::protocol::ParseProtoFromBytes(BodyView(body), ntf)) {
+        return;
+    }
+    if (ntf.uid() == 0 || !server_) {
+        return;
+    }
+
+    // 不知道该玩家的房间在哪个逻辑分片, 扇出到所有分片各自检查并回收。
+    // task.uid 置 0, 避免 handleTask 记录 uid_route_; 真正的 uid 在 body 里。
+    const auto count = server_->LogicShardCount();
+    for (std::size_t i = 0; i < count; ++i) {
+        LogicTask task;
+        task.msg_id = MsgId::ClientDisconnectedNtf;
+        task.uid = 0;
+        task.body = body;
+        server_->PostToLogic(static_cast<ShardId>(i), std::move(task));
+    }
 }
 
 void NetworkShard::SendToGatewayLink(LinkId link_id, std::shared_ptr<SendNode> packet) {

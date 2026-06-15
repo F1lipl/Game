@@ -70,6 +70,8 @@ private:
                              std::shared_ptr<const RecvNode> body);
     void HandlePingReq(LinkId link_id,
                        std::shared_ptr<const RecvNode> body);
+    // 客户端断开: 扇出到所有逻辑分片做房间回收 (不知道房间在哪个分片)
+    void HandleClientDisconnected(std::shared_ptr<const RecvNode> body);
 
     void SendToGatewayLink(LinkId link_id, std::shared_ptr<SendNode> packet);
 

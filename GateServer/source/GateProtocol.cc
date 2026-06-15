@@ -86,6 +86,20 @@ std::shared_ptr<SendNode> BuildPingReq(std::uint64_t client_time_ms) {
         payload);
 }
 
+std::shared_ptr<SendNode> BuildClientDisconnectedNtf(std::uint64_t uid) {
+    rts::v1::ClientDisconnectedNtf ntf;
+    ntf.set_uid(uid);
+
+    std::string payload;
+    if (!SerializeMessage(ntf, payload)) {
+        return nullptr;
+    }
+
+    return BuildPacket(
+        static_cast<std::uint16_t>(rts::protocol::MsgId::ClientDisconnectedNtf),
+        payload);
+}
+
 std::shared_ptr<SendNode> BuildGateToGameEnvelope(const Csession& session,
                                                   std::uint16_t inner_msg_id,
                                                   const RecvNode& body) {

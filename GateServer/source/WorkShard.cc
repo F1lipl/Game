@@ -1,6 +1,7 @@
 #include"../include/WorkShard.h"
 #include "../include/Csession.h"
 #include "../include/GameServerConnPool.h"
+#include "../include/GateProtocol.h"
 #include <memory>
 #include <thread>
 #include <utility>
@@ -44,6 +45,16 @@ void WorkShard::PostMessage(std::shared_ptr<SendNode>node){
         return;
     }
     ConnPool_->PostMessage(std::move(node));
+}
+
+void WorkShard::NotifyGameServerDisconnect(uid id){
+    if (!ConnPool_ || id == 0) {
+        return;
+    }
+    auto packet = gate::protocol::BuildClientDisconnectedNtf(id);
+    if (packet) {
+        ConnPool_->PostMessage(std::move(packet));
+    }
 }
 
 bool WorkShard::SendToUid(uid id, std::shared_ptr<SendNode> node) {

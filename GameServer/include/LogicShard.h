@@ -42,9 +42,12 @@ public:
     void HandlePlayerReady(LogicTask task);
     void HandleEnterBattle(LogicTask task);
     void HandlePlayerCommand(LogicTask task);
+    void HandleClientDisconnected(LogicTask task);
 
 private:
     void handleTask(LogicTask);
+    // 把 uid 从其所在房间移除; 房间空了就删除 (掉线/隐式离开共用)
+    void LeaveRoomInternal(Uid uid);
 
     // ---- tick / state-sync ----
     boost::asio::awaitable<void> TickLoop();

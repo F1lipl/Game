@@ -592,6 +592,42 @@ void LogicShard::BroadcastGameOver(const DungeonRoom& room, std::uint32_t winner
     spdlog::info("room {} game over, winner team {}", room.RoomId(), winner_team);
 }
 
+void LogicShard::LeaveRoomInternal(Uid uid) {
+    auto it = uid_to_room_.find(uid);
+    if (it == uid_to_room_.end()) {
+        return; // 不在本分片任何房间
+    }
+    const auto room_id = it->second;
+    uid_to_room_.erase(it);
+
+    auto room_it = rooms_.find(room_id);
+    if (room_it == rooms_.end()) {
+        return;
+    }
+    auto& room = room_it->second;
+    room.RemovePlayer(uid);
+    if (room.Empty()) {
+        rooms_.erase(room_it);
+        spdlog::info("room {} removed (uid {} left/disconnected)", room_id, uid);
+    } else {
+        BroadcastRoomState(room);
+        spdlog::info("uid {} left room {}", uid, room_id);
+    }
+}
+
+void LogicShard::HandleClientDisconnected(LogicTask task) {
+    rts::v1::ClientDisconnectedNtf ntf;
+    if (!rts::protocol::ParseProtoFromBytes(BodyView(task.body), ntf)) {
+        return;
+    }
+    const auto uid = ntf.uid();
+    if (uid == 0) {
+        return;
+    }
+    uid_route_.erase(uid);
+    LeaveRoomInternal(uid); // 该玩家不在本分片则是 no-op
+}
+
 void LogicShard::HandleCreateRoom(LogicTask task) {
     rts::v1::CreateRoomRsp rsp;
 
@@ -604,13 +640,8 @@ void LogicShard::HandleCreateRoom(LogicTask task) {
         return;
     }
 
-    if (auto uid_it = uid_to_room_.find(task.uid); uid_it != uid_to_room_.end()) {
-        rsp.set_code(rts::v1::ERROR_INVALID_REQUEST);
-        rsp.set_room_id(uid_it->second);
-        rsp.set_reason("player is already in room");
-        SendToPlayer(MsgId::CreateRoomRsp, task.uid, rsp);
-        return;
-    }
+    // 已在某房间(常见于上次掉线/退出残留): 先隐式离开旧房再建新房
+    LeaveRoomInternal(task.uid);
 
     // room_id 落在本 shard 的同余类: room_id % shard_count == shard_id_
     // 这样任何带 room_id 的消息都能路由回房间所在的 shard
@@ -652,13 +683,10 @@ void LogicShard::HandleJoinRoom(LogicTask task) {
         return;
     }
 
+    // 已在别的房间(常见于上次掉线/退出残留): 先隐式离开
     if (auto uid_it = uid_to_room_.find(task.uid);
         uid_it != uid_to_room_.end() && uid_it->second != req.room_id()) {
-        rsp.set_code(rts::v1::ERROR_INVALID_REQUEST);
-        rsp.set_room_id(uid_it->second);
-        rsp.set_reason("player is already in another room");
-        SendToPlayer(MsgId::JoinRoomRsp, task.uid, rsp);
-        return;
+        LeaveRoomInternal(task.uid);
     }
 
     auto room_it = rooms_.find(req.room_id());
