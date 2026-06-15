@@ -126,7 +126,12 @@ boost::asio::awaitable<std::size_t> Csession::ReadHead() {
         boost::asio::as_tuple(boost::asio::use_awaitable));
 
     if (ec) {
-        spdlog::error("session {} read head error {}", uuid_, ec.message());
+        // EOF / 连接重置 = 客户端正常断开, 不是错误; 触发 close() 走房间回收
+        if (ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset) {
+            spdlog::info("session {} disconnected: {}", uuid_, ec.message());
+        } else {
+            spdlog::error("session {} read head error {}", uuid_, ec.message());
+        }
         close();
         co_return 0;
     }
@@ -196,7 +201,11 @@ boost::asio::awaitable<bool> Csession::ReadData(std::size_t len) {
         boost::asio::as_tuple(boost::asio::use_awaitable));
 
     if (ec) {
-        spdlog::error("session {} read data error {}", uuid_, ec.message());
+        if (ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset) {
+            spdlog::info("session {} disconnected: {}", uuid_, ec.message());
+        } else {
+            spdlog::error("session {} read data error {}", uuid_, ec.message());
+        }
         close();
         co_return false;
     }
