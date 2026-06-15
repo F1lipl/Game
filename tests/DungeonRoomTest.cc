@@ -108,6 +108,30 @@ TEST_CASE("Move command only affects units the commander owns") {
     REQUIRE(room.Dirty().count(other) == 0);
 }
 
+TEST_CASE("Group move assigns distinct formation slots even when units overlap") {
+    DungeonRoom room(1, "r", 2);
+    std::vector<std::uint64_t> ids;
+    for (int i = 0; i < 6; ++i) {
+        ids.push_back(room.SpawnUnit(
+            100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f));
+    }
+
+    room.EnqueueCommand(MakeMove(100, ids, 20.0f, 20.0f));
+    room.ApplyPending();
+
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const Unit* lhs = room.FindUnit(ids[i]);
+        REQUIRE(lhs != nullptr);
+        for (std::size_t j = i + 1; j < ids.size(); ++j) {
+            const Unit* rhs = room.FindUnit(ids[j]);
+            REQUIRE(rhs != nullptr);
+            const float dx = lhs->target.x - rhs->target.x;
+            const float dz = lhs->target.z - rhs->target.z;
+            REQUIRE(std::sqrt(dx * dx + dz * dz) > 2.0f);
+        }
+    }
+}
+
 TEST_CASE("Step moves a unit toward its target and stops on arrival") {
     DungeonRoom room(1, "r", 2);
     const auto id = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);

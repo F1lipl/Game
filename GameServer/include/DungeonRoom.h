@@ -171,6 +171,7 @@ struct Unit {
     std::uint64_t dropoff_id {};      // 当前返还的资源站
     std::uint64_t pickup_drop_id {};  // 当前捡拾的掉落物
     std::uint64_t build_target_id {}; // 当前施工的建筑
+    Vec3f interaction_offset {};      // 多单位共享目标周围的工作槽位
     std::uint32_t carried_amount {};  // 背包数量
     std::uint32_t carried_raw {};     // 背包资源原始类型
     float work_cd {};                 // 采集计时累加器
@@ -707,9 +708,67 @@ private:
         u.dropoff_id = 0;
         u.pickup_drop_id = 0;
         u.build_target_id = 0;
+        u.interaction_offset = Vec3f{};
         u.work_cd = 0.0f;
         u.path.clear();
         u.path_index = 0;
+    }
+
+    std::vector<Unit*> CollectOwnedUnits(
+        std::uint64_t owner_uid,
+        const std::vector<std::uint64_t>& unit_ids) {
+        std::vector<Unit*> selected;
+        selected.reserve(unit_ids.size());
+        for (auto id : unit_ids) {
+            auto it = units_.find(id);
+            if (it != units_.end() && it->second.owner_uid == owner_uid) {
+                selected.push_back(&it->second);
+            }
+        }
+        std::sort(selected.begin(), selected.end(),
+                  [](const Unit* lhs, const Unit* rhs) { return lhs->id < rhs->id; });
+        return selected;
+    }
+
+    static Vec3f FormationSlot(std::size_t index,
+                               std::size_t count,
+                               float forward_x,
+                               float forward_z) {
+        if (count <= 1) {
+            return Vec3f{};
+        }
+
+        const std::size_t columns = static_cast<std::size_t>(
+            std::ceil(std::sqrt(static_cast<float>(count))));
+        const std::size_t rows = (count + columns - 1) / columns;
+        const std::size_t row = index / columns;
+        const std::size_t column = index % columns;
+        const std::size_t row_count = std::min(columns, count - row * columns);
+
+        const float lateral =
+            (static_cast<float>(column) - (static_cast<float>(row_count) - 1.0f) * 0.5f) * 2.8f;
+        const float longitudinal =
+            ((static_cast<float>(rows) - 1.0f) * 0.5f - static_cast<float>(row)) * 3.0f;
+        const float right_x = forward_z;
+        const float right_z = -forward_x;
+        return Vec3f{
+            right_x * lateral + forward_x * longitudinal,
+            0.0f,
+            right_z * lateral + forward_z * longitudinal};
+    }
+
+    static Vec3f InteractionSlot(std::size_t index, std::size_t count) {
+        if (count == 0) {
+            return Vec3f{};
+        }
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kInteractionRadius = 1.8f;
+        const float angle = 2.0f * kPi * static_cast<float>(index) /
+                            static_cast<float>(count);
+        return Vec3f{
+            std::cos(angle) * kInteractionRadius,
+            0.0f,
+            std::sin(angle) * kInteractionRadius};
     }
 
     // 反作弊兜底: 只能指挥属于自己的单位
@@ -717,38 +776,37 @@ private:
                    const std::vector<std::uint64_t>& unit_ids,
                    const Vec3f& target,
                    const std::vector<Vec3f>& path = {}) {
-        Vec3f center {};
-        std::size_t selected_count = 0;
-        for (auto id : unit_ids) {
-            auto it = units_.find(id);
-            if (it == units_.end() || it->second.owner_uid != owner_uid) {
-                continue;
-            }
-            center.x += it->second.pos.x;
-            center.y += it->second.pos.y;
-            center.z += it->second.pos.z;
-            ++selected_count;
-        }
-
-        if (selected_count == 0) {
+        auto selected = CollectOwnedUnits(owner_uid, unit_ids);
+        if (selected.empty()) {
             return;
         }
 
-        const float inverse_count = 1.0f / static_cast<float>(selected_count);
+        Vec3f center {};
+        for (const Unit* unit : selected) {
+            center.x += unit->pos.x;
+            center.y += unit->pos.y;
+            center.z += unit->pos.z;
+        }
+        const float inverse_count = 1.0f / static_cast<float>(selected.size());
         center.x *= inverse_count;
         center.y *= inverse_count;
         center.z *= inverse_count;
 
-        for (auto id : unit_ids) {
-            auto it = units_.find(id);
-            if (it == units_.end() || it->second.owner_uid != owner_uid) {
-                continue;
-            }
-            auto& u = it->second;
-            const Vec3f formation_offset {
-                u.pos.x - center.x,
-                0.0f,
-                u.pos.z - center.z};
+        float forward_x = target.x - center.x;
+        float forward_z = target.z - center.z;
+        const float direction_length = std::sqrt(forward_x * forward_x + forward_z * forward_z);
+        if (direction_length > 1e-4f) {
+            forward_x /= direction_length;
+            forward_z /= direction_length;
+        } else {
+            forward_x = 0.0f;
+            forward_z = 1.0f;
+        }
+
+        for (std::size_t index = 0; index < selected.size(); ++index) {
+            auto& u = *selected[index];
+            const Vec3f formation_offset =
+                FormationSlot(index, selected.size(), forward_x, forward_z);
             ClearWorkerTask(u);
             u.target = Vec3f{
                 target.x + formation_offset.x,
@@ -763,7 +821,7 @@ private:
             u.has_target = true;
             u.attack_target = 0; // 移动取消攻击
             u.state = kStateMoving;
-            dirty_.insert(id);
+            dirty_.insert(u.id);
         }
     }
 
@@ -809,38 +867,34 @@ private:
         if (fields_.find(field_id) == fields_.end()) {
             return;
         }
-        for (auto id : unit_ids) {
-            auto it = units_.find(id);
-            if (it == units_.end() || it->second.owner_uid != owner_uid) {
-                continue;
-            }
-            auto& u = it->second;
+        auto selected = CollectOwnedUnits(owner_uid, unit_ids);
+        for (std::size_t index = 0; index < selected.size(); ++index) {
+            auto& u = *selected[index];
             ClearWorkerTask(u);
+            u.interaction_offset = InteractionSlot(index, selected.size());
             u.attack_target = 0;
             u.has_target = false;
             u.task = WorkerTask::Gathering;
             u.gather_field_id = field_id;
             u.state = kStateMoving;
-            dirty_.insert(id);
+            dirty_.insert(u.id);
         }
     }
 
     void ApplyStore(std::uint64_t owner_uid,
                     const std::vector<std::uint64_t>& unit_ids,
                     std::uint64_t camp_id) {
-        for (auto id : unit_ids) {
-            auto it = units_.find(id);
-            if (it == units_.end() || it->second.owner_uid != owner_uid) {
-                continue;
-            }
-            auto& u = it->second;
+        auto selected = CollectOwnedUnits(owner_uid, unit_ids);
+        for (std::size_t index = 0; index < selected.size(); ++index) {
+            auto& u = *selected[index];
             ClearWorkerTask(u);
+            u.interaction_offset = InteractionSlot(index, selected.size());
             u.attack_target = 0;
             u.has_target = false;
             u.task = WorkerTask::Returning;
             u.dropoff_id = camp_id; // 0 表示自动找最近资源站
             u.state = kStateMoving;
-            dirty_.insert(id);
+            dirty_.insert(u.id);
         }
     }
 
@@ -850,19 +904,17 @@ private:
         if (drops_.find(drop_id) == drops_.end()) {
             return;
         }
-        for (auto id : unit_ids) {
-            auto it = units_.find(id);
-            if (it == units_.end() || it->second.owner_uid != owner_uid) {
-                continue;
-            }
-            auto& u = it->second;
+        auto selected = CollectOwnedUnits(owner_uid, unit_ids);
+        for (std::size_t index = 0; index < selected.size(); ++index) {
+            auto& u = *selected[index];
             ClearWorkerTask(u);
+            u.interaction_offset = InteractionSlot(index, selected.size());
             u.attack_target = 0;
             u.has_target = false;
             u.task = WorkerTask::Pickup;
             u.pickup_drop_id = drop_id;
             u.state = kStateMoving;
-            dirty_.insert(id);
+            dirty_.insert(u.id);
         }
     }
 
@@ -1094,7 +1146,11 @@ private:
         }
 
         ResourceFieldEntity& field = it->second;
-        if (!MoveToward(u, field.pos, kHarvestRange, dt)) {
+        const Vec3f work_position {
+            field.pos.x + u.interaction_offset.x,
+            field.pos.y,
+            field.pos.z + u.interaction_offset.z};
+        if (!MoveToward(u, work_position, 0.15f, dt)) {
             u.state = kStateMoving;
             dirty_.insert(u.id);
             return;
@@ -1167,7 +1223,11 @@ private:
             return;
         }
 
-        if (!MoveToward(u, camp->pos, kDropoffRange, dt)) {
+        const Vec3f dropoff_position {
+            camp->pos.x + u.interaction_offset.x,
+            camp->pos.y,
+            camp->pos.z + u.interaction_offset.z};
+        if (!MoveToward(u, dropoff_position, 0.15f, dt)) {
             u.state = kStateMoving;
             dirty_.insert(u.id);
             return;
@@ -1207,7 +1267,11 @@ private:
         }
 
         ResourceDropEntity& drop = it->second;
-        if (!MoveToward(u, drop.pos, kPickupRange, dt)) {
+        const Vec3f pickup_position {
+            drop.pos.x + u.interaction_offset.x,
+            drop.pos.y,
+            drop.pos.z + u.interaction_offset.z};
+        if (!MoveToward(u, pickup_position, 0.15f, dt)) {
             u.state = kStateMoving;
             dirty_.insert(u.id);
             return;
