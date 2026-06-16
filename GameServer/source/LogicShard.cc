@@ -382,17 +382,27 @@ void LogicShard::SpawnInitialUnits(DungeonRoom& room) {
                            kUnitHp, kUnitSpeed, facing_yaw);
         }
 
-        // 基地附近的资源场: 食物(浆果) / 木头 / 金子
-        Vec3f food = Offset(crystal, layout.right, -6.0f);
-        food = Offset(food, layout.forward, 6.0f);
-        room.SpawnResourceField(kRawBerries, food, 500);
+        auto spawn_resource = [&](std::uint32_t raw,
+                                  float right_distance,
+                                  float forward_distance,
+                                  std::uint32_t amount) {
+            Vec3f pos = Offset(crystal, layout.right, right_distance);
+            pos = Offset(pos, layout.forward, forward_distance);
+            room.SpawnResourceField(raw, pos, amount);
+        };
 
-        Vec3f wood = Offset(crystal, layout.right, 6.0f);
-        wood = Offset(wood, layout.forward, 6.0f);
-        room.SpawnResourceField(kRawWood, wood, 500);
+        // 基地附近资源: 左翼浆果、右翼木材、前方金矿。坐标使用队伍局部坐标,
+        // 因此两边天然镜像对称, 并避开兵营和开局六人阵型。
+        spawn_resource(kRawBerries, -11.0f, 10.0f, 450);
+        spawn_resource(kRawBerries, -14.0f, 13.5f, 450);
+        spawn_resource(kRawBerries, -8.0f, 15.5f, 450);
 
-        Vec3f gold = Offset(crystal, layout.forward, 10.0f);
-        room.SpawnResourceField(kRawGold, gold, 300);
+        spawn_resource(kRawWood, 16.0f, 7.0f, 600);
+        spawn_resource(kRawWood, 19.0f, 11.0f, 600);
+        spawn_resource(kRawWood, 22.0f, 14.5f, 600);
+
+        spawn_resource(kRawGold, -3.5f, 20.0f, 400);
+        spawn_resource(kRawGold, 3.5f, 21.5f, 400);
     }
 }
 
