@@ -1030,6 +1030,17 @@ void LogicShard::HandlePlayerCommand(LogicTask task) {
         pending.unit_ids.assign(cmd.actor_unit_ids().begin(),
                                 cmd.actor_unit_ids().end());
         pending.target_entity = cmd.resource_field_id();
+        {
+            const Unit* hu = (cmd.actor_unit_ids_size() > 0)
+                ? room.FindUnit(cmd.actor_unit_ids(0)) : nullptr;
+            spdlog::info("HarvestCmd uid={} room={} field={} field_exists={} units={} "
+                         "firstUnitFound={} firstUnitOwner={}",
+                         task.uid, room_id, cmd.resource_field_id(),
+                         (room.FindField(cmd.resource_field_id()) != nullptr),
+                         cmd.actor_unit_ids_size(),
+                         (hu != nullptr),
+                         (hu ? hu->owner_uid : 0));
+        }
         room.EnqueueCommand(std::move(pending));
         break;
     }
