@@ -36,7 +36,7 @@ constexpr std::uint32_t kDefaultTickRate = 20;
 constexpr std::chrono::milliseconds kTickInterval {50}; // 20Hz
 constexpr float kTickSeconds = 0.05f;
 constexpr std::uint64_t kFullSnapshotInterval = 20; // 每 20 个 tick 一次全量, 其余增量
-constexpr float kUnitSpeed = 3.0f;  // 单位/秒
+constexpr float kUnitSpeed = kVillagerMoveSpeed;  // 单位/秒 (对齐单机手感)
 constexpr float kUnitHp = 100.0f;
 constexpr std::uint32_t kStartUnitsPerPlayer = 6;
 constexpr float kFormationColumnSpacing = 2.8f;

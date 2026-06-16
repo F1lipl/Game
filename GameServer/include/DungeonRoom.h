@@ -68,6 +68,7 @@ inline constexpr float kBuildingAttackRange = 4.0f; // 建筑体积大, 攻击�
 inline constexpr float kTrainSpawnFront = 4.0f;     // 训练出兵: 在建筑正前方多远出现
 inline constexpr float kTrainWalkOut = 3.0f;        // 出兵后再往前走多远集结
 inline constexpr float kTrainLateralSpacing = 1.5f; // 多个兵之间的横向间隔(防重叠)
+inline constexpr float kVillagerMoveSpeed = 6.0f;   // 移动速度 (对齐单机手感; 单机 asset 是 7, 服务端匀速无加速取 6)
 
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
@@ -1417,7 +1418,7 @@ private:
 
                 const auto new_id = SpawnUnit(b.owner_uid, b.team,
                                               item.unit_type, spawn_pos,
-                                              100.0f, 3.0f, b.yaw);
+                                              100.0f, kVillagerMoveSpeed, b.yaw);
 
                 auto nit = units_.find(new_id);
                 if (nit != units_.end()) {
