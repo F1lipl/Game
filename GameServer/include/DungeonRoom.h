@@ -68,7 +68,7 @@ inline constexpr float kAttackCooldown = 1.0f; // 秒
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
 inline constexpr float kHarvestRange = 2.0f;        // 采集判定距离
-inline constexpr float kHarvestInterval = 0.2f;     // 每多少秒采 1 单位 (=> 5/s)
+inline constexpr float kHarvestInterval = 1.0f;     // 每多少秒采 1 单位, 对齐 Unity 采集动画节奏
 inline constexpr std::uint32_t kHarvestAmount = 1;  // 每次采集量
 inline constexpr float kDropoffRange = 2.5f;        // 资源站存放判定距离
 inline constexpr float kPickupRange = 2.0f;         // 捡拾掉落物判定距离
