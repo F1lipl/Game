@@ -70,6 +70,7 @@ inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上�
 inline constexpr float kHarvestRange = 2.0f;        // 采集判定距离
 inline constexpr float kHarvestInterval = 1.0f;     // 每多少秒采 1 单位, 对齐 Unity 采集动画节奏
 inline constexpr std::uint32_t kHarvestAmount = 1;  // 每次采集量
+inline constexpr float kCarryLiftDuration = 2.2f;   // 采满后举起资源的表现停顿
 inline constexpr float kDropoffRange = 2.5f;        // 资源站存放判定距离
 inline constexpr float kPickupRange = 2.0f;         // 捡拾掉落物判定距离
 inline constexpr float kBuildRange = 2.5f;          // 施工判定距离
@@ -143,6 +144,7 @@ inline std::uint32_t RawToResourceType(std::uint32_t raw) {
 enum class WorkerTask : std::uint8_t {
     None,        // 无工作 (可能仍在普通移动 has_target)
     Gathering,   // 去资源场采集
+    PreparingReturn, // 采满后原地举起资源, 再回资源站
     Returning,   // 背着资源回资源站
     Pickup,      // 去捡掉落物
     Constructing // 去施工
@@ -545,6 +547,7 @@ public:
             } else {
                 switch (u.task) {
                 case WorkerTask::Gathering:   StepGather(u, dt); break;
+                case WorkerTask::PreparingReturn: StepPreparingReturn(u, dt); break;
                 case WorkerTask::Returning:   StepReturn(u, dt); break;
                 case WorkerTask::Pickup:      StepPickup(u, dt); break;
                 case WorkerTask::Constructing:StepConstruct(u, dt); break;
@@ -864,7 +867,8 @@ private:
     void ApplyHarvest(std::uint64_t owner_uid,
                       const std::vector<std::uint64_t>& unit_ids,
                       std::uint64_t field_id) {
-        if (fields_.find(field_id) == fields_.end()) {
+        auto field_it = fields_.find(field_id);
+        if (field_it == fields_.end()) {
             return;
         }
         auto selected = CollectOwnedUnits(owner_uid, unit_ids);
@@ -876,6 +880,7 @@ private:
             u.has_target = false;
             u.task = WorkerTask::Gathering;
             u.gather_field_id = field_id;
+            u.target = field_it->second.pos;
             u.state = kStateMoving;
             dirty_.insert(u.id);
         }
@@ -1041,6 +1046,14 @@ private:
         return false;
     }
 
+    void FaceToward(Unit& u, const Vec3f& target) {
+        const float dx = target.x - u.pos.x;
+        const float dz = target.z - u.pos.z;
+        if ((dx * dx + dz * dz) > 1e-4f) {
+            u.yaw = std::atan2(dx, dz);
+        }
+    }
+
     // 方案A: 有 path 则沿 waypoints 依次走 (一个 tick 内可跨多个近点), 否则直线走 target
     void StepMove(Unit& u, float dt) {
         float remaining = u.speed * dt;
@@ -1128,7 +1141,8 @@ private:
     void StepGather(Unit& u, float dt) {
         // 背满了 -> 回去存
         if (u.carried_amount >= kVillagerCarryCapacity) {
-            SwitchToReturn(u);
+            const ResourceFieldEntity* field = FindField(u.gather_field_id);
+            SwitchToPreparingReturn(u, field != nullptr ? field->pos : u.target);
             return;
         }
 
@@ -1136,7 +1150,7 @@ private:
         if (it == fields_.end() || it->second.amount_left == 0) {
             // 资源场没了: 有货先回存, 否则发呆
             if (u.carried_amount > 0) {
-                SwitchToReturn(u);
+                SwitchToPreparingReturn(u, u.target);
             } else {
                 ClearWorkerTask(u);
                 u.state = kStateIdle;
@@ -1146,6 +1160,8 @@ private:
         }
 
         ResourceFieldEntity& field = it->second;
+        const Vec3f field_position = field.pos;
+        u.target = field_position;
         const Vec3f work_position {
             field.pos.x + u.interaction_offset.x,
             field.pos.y,
@@ -1157,6 +1173,7 @@ private:
         }
 
         // 到达, 开采
+        FaceToward(u, field_position);
         u.state = kStateWorking;
         u.carried_raw = field.raw;
         u.work_cd += dt;
@@ -1176,8 +1193,38 @@ private:
             // 采空 -> 资源场消失
             field_despawned_.push_back(field.id);
             fields_.erase(it);
+            if (u.carried_amount > 0) {
+                SwitchToPreparingReturn(u, field_position);
+                return;
+            }
+        }
+
+        if (u.carried_amount >= kVillagerCarryCapacity) {
+            SwitchToPreparingReturn(u, field_position);
+            return;
         }
         dirty_.insert(u.id);
+    }
+
+    void SwitchToPreparingReturn(Unit& u, const Vec3f& face_target) {
+        u.task = WorkerTask::PreparingReturn;
+        u.target = face_target;
+        u.has_target = false;
+        u.work_cd = kCarryLiftDuration;
+        u.state = kStateWorking;
+        FaceToward(u, face_target);
+        dirty_.insert(u.id);
+    }
+
+    void StepPreparingReturn(Unit& u, float dt) {
+        FaceToward(u, u.target);
+        u.state = kStateWorking;
+        u.work_cd -= dt;
+        if (u.work_cd > 0.0f) {
+            dirty_.insert(u.id);
+            return;
+        }
+        SwitchToReturn(u);
     }
 
     void SwitchToReturn(Unit& u) {
