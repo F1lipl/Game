@@ -65,6 +65,9 @@ inline constexpr float kAttackRange = 2.0f;
 inline constexpr float kAttackDamage = 20.0f;
 inline constexpr float kAttackCooldown = 1.0f; // 秒
 inline constexpr float kBuildingAttackRange = 4.0f; // 建筑体积大, 攻击距离放宽
+inline constexpr float kTrainSpawnFront = 4.0f;     // 训练出兵: 在建筑正前方多远出现
+inline constexpr float kTrainWalkOut = 3.0f;        // 出兵后再往前走多远集结
+inline constexpr float kTrainLateralSpacing = 1.5f; // 多个兵之间的横向间隔(防重叠)
 
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
@@ -1404,11 +1407,30 @@ private:
             auto& item = b.train_queue.front();
             item.remaining -= dt;
             if (item.remaining <= 0.0f) {
-                // 训练完成, 在建筑旁出兵
+                // 训练完成: 朝建筑正前方走出来 (yaw 决定朝向, forward=(sin,cos)),
+                // 再走到集结点并按右向错开, 避免多个兵刷在同一点重叠。
+                const float fx = std::sin(b.yaw);
+                const float fz = std::cos(b.yaw);
                 Vec3f spawn_pos = b.pos;
-                spawn_pos.x += 2.0f;
-                SpawnUnit(b.owner_uid, b.team, item.unit_type, spawn_pos,
-                          100.0f, 3.0f);
+                spawn_pos.x += fx * kTrainSpawnFront;
+                spawn_pos.z += fz * kTrainSpawnFront;
+
+                const auto new_id = SpawnUnit(b.owner_uid, b.team,
+                                              item.unit_type, spawn_pos,
+                                              100.0f, 3.0f, b.yaw);
+
+                auto nit = units_.find(new_id);
+                if (nit != units_.end()) {
+                    const float rx = fz;   // 右向 = forward 顺时针转 90°
+                    const float rz = -fx;
+                    const float lateral =
+                        (static_cast<float>(new_id % 5) - 2.0f) * kTrainLateralSpacing;
+                    nit->second.target = Vec3f{
+                        b.pos.x + fx * (kTrainSpawnFront + kTrainWalkOut) + rx * lateral,
+                        0.0f,
+                        b.pos.z + fz * (kTrainSpawnFront + kTrainWalkOut) + rz * lateral};
+                    nit->second.has_target = true;
+                }
                 b.train_queue.erase(b.train_queue.begin());
             }
             building_dirty_.insert(b.id);
