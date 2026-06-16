@@ -64,6 +64,7 @@ inline constexpr std::uint32_t kRawFarm = 3;
 inline constexpr float kAttackRange = 2.0f;
 inline constexpr float kAttackDamage = 20.0f;
 inline constexpr float kAttackCooldown = 1.0f; // 秒
+inline constexpr float kBuildingAttackRange = 4.0f; // 建筑体积大, 攻击距离放宽
 
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
@@ -1097,45 +1098,67 @@ private:
         dirty_.insert(u.id);
     }
 
-    void StepCombat(Unit& u, float dt) {
-        auto it = units_.find(u.attack_target);
-        if (it == units_.end() || it->second.hp <= 0.0f) {
-            // 目标已不存在/已死, 停手
-            u.attack_target = 0;
-            u.state = kStateIdle;
-            dirty_.insert(u.id);
-            return;
-        }
-
-        Unit& target = it->second;
-        const float dx = target.pos.x - u.pos.x;
-        const float dz = target.pos.z - u.pos.z;
+    // 朝目标点逼近; 已进入射程返回 true (本帧可攻击), 否则推进一步返回 false
+    bool ChaseToward(Unit& u, const Vec3f& tpos, float dt, float range) {
+        const float dx = tpos.x - u.pos.x;
+        const float dz = tpos.z - u.pos.z;
         const float dist = std::sqrt(dx * dx + dz * dz);
-
-        u.state = kStateAttacking; // attacking
-
-        if (dist > kAttackRange) {
-            // 不在射程内 -> 追击
+        if (dist > 1e-4f) {
+            u.yaw = std::atan2(dx, dz); // 始终面向目标
+        }
+        if (dist > range) {
             const float step = u.speed * dt;
-            if (step > 0.0f && dist > 1e-4f) {
+            if (step > 0.0f) {
                 u.pos.x += dx / dist * step;
                 u.pos.z += dz / dist * step;
-                u.yaw = std::atan2(dx, dz);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    void StopAttack(Unit& u) {
+        u.attack_target = 0;
+        u.state = kStateIdle;
+        dirty_.insert(u.id);
+    }
+
+    void StepCombat(Unit& u, float dt) {
+        // 攻击目标先按单位找, 找不到再按建筑找 (单位可攻击敌方建筑/水晶)
+        if (auto it = units_.find(u.attack_target); it != units_.end()) {
+            Unit& target = it->second;
+            if (target.hp <= 0.0f || target.team == u.team) {
+                StopAttack(u); // 目标已死 / 友军免伤
+                return;
+            }
+            u.state = kStateAttacking;
+            if (ChaseToward(u, target.pos, dt, kAttackRange) && u.attack_cd <= 0.0f) {
+                target.hp = std::max(0.0f, target.hp - kAttackDamage);
+                u.attack_cd = kAttackCooldown;
+                dirty_.insert(target.id);
             }
             dirty_.insert(u.id);
             return;
         }
 
-        // 射程内, 冷却好了就打一下
-        if (u.attack_cd <= 0.0f) {
-            target.hp -= kAttackDamage;
-            if (target.hp < 0.0f) {
-                target.hp = 0.0f;
+        if (auto it = buildings_.find(u.attack_target); it != buildings_.end()) {
+            Building& target = it->second;
+            if (target.hp <= 0.0f || target.team == u.team) {
+                StopAttack(u); // 已被摧毁 / 不能打自家建筑
+                return;
             }
-            u.attack_cd = kAttackCooldown;
-            dirty_.insert(target.id);
+            u.state = kStateAttacking;
+            if (ChaseToward(u, target.pos, dt, kBuildingAttackRange) && u.attack_cd <= 0.0f) {
+                target.hp = std::max(0.0f, target.hp - kAttackDamage);
+                u.attack_cd = kAttackCooldown;
+                building_dirty_.insert(target.id);
+            }
+            dirty_.insert(u.id);
+            return;
         }
-        dirty_.insert(u.id);
+
+        // 目标已不存在 (单位被清理 / 建筑被摧毁)
+        StopAttack(u);
     }
 
     void StepGather(Unit& u, float dt) {

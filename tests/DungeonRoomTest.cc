@@ -274,6 +274,31 @@ TEST_CASE("Single-team room never declares game over") {
     REQUIRE_FALSE(room.CheckGameOver(winner));
 }
 
+TEST_CASE("Destroying the enemy crystal ends the game") {
+    DungeonRoom room(1, "r", 2);
+    // 双方各一座水晶 (1000 血), team 0 派一名攻击者去拆 team 1 的水晶
+    room.SpawnBuilding(100, 0, kBuildingCrystal, Vec3f{0.0f, 0.0f, 0.0f}, 0.0f, false);
+    const auto enemy_crystal =
+        room.SpawnBuilding(200, 1, kBuildingCrystal, Vec3f{1.0f, 0.0f, 0.0f}, 0.0f, false);
+    const auto soldier = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    std::uint32_t winner = 99;
+    REQUIRE_FALSE(room.CheckGameOver(winner)); // 两座水晶都在 -> 未分胜负
+
+    room.EnqueueCommand(MakeAttack(100, {soldier}, enemy_crystal));
+    room.ApplyPending();
+
+    // 1000 血 / 20 每秒 -> ~50 个 1 秒 tick 拆完 (多给几次确保打掉)
+    for (int i = 0; i < 60; ++i) {
+        room.Step(1.0f);
+    }
+
+    REQUIRE(room.FindBuilding(enemy_crystal) == nullptr); // 水晶已被摧毁并清理
+    REQUIRE(room.CheckGameOver(winner));
+    REQUIRE(winner == 0); // team 0 的水晶仍在 -> team 0 获胜
+}
+
 namespace {
 
 PendingCommand MakeHarvest(std::uint64_t owner,
