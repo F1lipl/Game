@@ -121,7 +121,7 @@ inline ResCost UnitCost(std::uint32_t unit_type) {
 
 inline float UnitTrainTime(std::uint32_t unit_type) {
     (void)unit_type;
-    return 5.0f; // 秒
+    return 2.0f; // 秒 (体感: 太长像卡住, 太短没训练感)
 }
 
 // 哪种建筑能训练哪种单位
