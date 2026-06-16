@@ -1,0 +1,7 @@
+# 构建上下文里不需要的东西 (减小镜像构建上下文, 避免污染)
+.git/
+build/
+.cache/
+generated/
+.vscode/
+*.user

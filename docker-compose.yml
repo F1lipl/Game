@@ -1,0 +1,13 @@
+# 一条命令拉起整套后端:  docker compose up --build
+# 客户端连 <宿主机IP>:8888 即可。
+services:
+  rts-backend:
+    build:
+      context: .
+      args:
+        BUILD_JOBS: "2"      # 低内存机器改成 "1"
+    image: rts-game-backend:latest
+    container_name: rts-backend
+    ports:
+      - "8888:8888"          # GateServer, 客户端连接端口
+    restart: unless-stopped
