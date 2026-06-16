@@ -845,7 +845,8 @@ void LogicShard::HandlePlayerReady(LogicTask task) {
     }
 
     BroadcastRoomState(room);
-    if (room.AllReady() && !room.Started()) {
+    // 必须房间满员 + 全员准备才开局 (避免单人 ready 就开)
+    if (room.IsFull() && room.AllReady() && !room.Started()) {
         room.SetStarted(true);
         BroadcastGameStart(room);
 
