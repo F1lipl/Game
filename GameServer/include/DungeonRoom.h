@@ -69,6 +69,9 @@ inline constexpr float kTrainSpawnFront = 4.0f;     // 训练出兵: 在建筑�
 inline constexpr float kTrainWalkOut = 3.0f;        // 出兵后再往前走多远集结
 inline constexpr float kTrainLateralSpacing = 1.5f; // 多个兵之间的横向间隔(防重叠)
 inline constexpr float kVillagerMoveSpeed = 6.0f;   // 移动速度 (对齐单机手感; 单机 asset 是 7, 服务端匀速无加速取 6)
+inline constexpr float kAggroRange = 8.0f;          // 自动索敌半径 (单机 ~10)
+inline constexpr float kAggroLeash = 14.0f;         // 自动索敌后离起点超过此距离则脱战返回
+inline constexpr std::uint32_t kAggroScanTicks = 5; // 每多少 tick 扫一次索敌(省 CPU)
 
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
@@ -182,6 +185,10 @@ struct Unit {
     std::uint32_t carried_amount {};  // 背包数量
     std::uint32_t carried_raw {};     // 背包资源原始类型
     float work_cd {};                 // 采集计时累加器
+
+    // 自动索敌(自卫): 是否当前攻击目标为自动获取 + 索敌起点(用于脱战返回)
+    bool auto_aggro {};
+    Vec3f aggro_origin {};
 };
 
 struct Building {
@@ -535,6 +542,7 @@ public:
 
     // 推进一个固定步长: 移动 / 采集 / 建造 / 追击 / 攻击, 最后清理死亡
     void Step(float dt) {
+        const bool do_aggro = (++aggro_scan_tick_ % kAggroScanTicks) == 0;
         for (auto& [id, u] : units_) {
             if (u.hp <= 0.0f) {
                 continue; // 本帧已被打死, 等待清理
@@ -545,6 +553,12 @@ public:
                 if (u.attack_cd < 0.0f) {
                     u.attack_cd = 0.0f;
                 }
+            }
+
+            // 真正空闲 (无攻击目标/无工作/无移动命令) 才自动索敌, 不打扰采集/移动中的单位
+            if (do_aggro && u.attack_target == 0 &&
+                u.task == WorkerTask::None && !u.has_target) {
+                AcquireAutoTarget(u);
             }
 
             if (u.attack_target != 0) {
@@ -863,6 +877,7 @@ private:
             auto& u = it->second;
             ClearWorkerTask(u);
             u.attack_target = target_entity;
+            u.auto_aggro = false; // 手动下令攻击: 不受脱战返回约束
             u.has_target = false;
             u.state = kStateAttacking;
             dirty_.insert(id);
@@ -1123,11 +1138,52 @@ private:
 
     void StopAttack(Unit& u) {
         u.attack_target = 0;
+        u.auto_aggro = false;
         u.state = kStateIdle;
         dirty_.insert(u.id);
     }
 
+    // 空闲单位自动索敌 (自卫): 盯住范围内最近的敌方单位
+    void AcquireAutoTarget(Unit& u) {
+        float best_d2 = kAggroRange * kAggroRange;
+        std::uint64_t best_id = 0;
+        for (const auto& [id, other] : units_) {
+            if (other.team == u.team || other.hp <= 0.0f) {
+                continue;
+            }
+            const float dx = other.pos.x - u.pos.x;
+            const float dz = other.pos.z - u.pos.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best_id = id;
+            }
+        }
+        if (best_id != 0) {
+            u.attack_target = best_id;
+            u.auto_aggro = true;
+            u.aggro_origin = u.pos;
+            u.state = kStateAttacking;
+            dirty_.insert(u.id);
+        }
+    }
+
     void StepCombat(Unit& u, float dt) {
+        // 自动索敌的单位: 离起点太远则脱战, 走回起点 (避免被引着满地图跑)
+        if (u.auto_aggro) {
+            const float dx = u.pos.x - u.aggro_origin.x;
+            const float dz = u.pos.z - u.aggro_origin.z;
+            if (dx * dx + dz * dz > kAggroLeash * kAggroLeash) {
+                u.auto_aggro = false;
+                u.attack_target = 0;
+                u.has_target = true;
+                u.target = u.aggro_origin;
+                u.state = kStateMoving;
+                dirty_.insert(u.id);
+                return;
+            }
+        }
+
         // 攻击目标先按单位找, 找不到再按建筑找 (单位可攻击敌方建筑/水晶)
         if (auto it = units_.find(u.attack_target); it != units_.end()) {
             Unit& target = it->second;
@@ -1483,6 +1539,7 @@ private:
     std::string room_name_;
     std::uint32_t max_players_ {2};
     bool started_ {false};
+    std::uint32_t aggro_scan_tick_ {}; // 自动索敌扫描节流计数
     std::uint64_t server_tick_ {};
     std::uint64_t next_command_id_ {};
     std::unordered_map<std::uint64_t, RoomPlayerState> players_;

@@ -299,6 +299,35 @@ TEST_CASE("Destroying the enemy crystal ends the game") {
     REQUIRE(winner == 0); // team 0 的水晶仍在 -> team 0 获胜
 }
 
+TEST_CASE("Idle unit auto-acquires and attacks a nearby enemy (self-defense)") {
+    DungeonRoom room(1, "r", 2);
+    room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto enemy = room.SpawnUnit(200, 1, 0, Vec3f{3.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    // 不下任何命令: 跑足够多 tick 让索敌扫描触发并交战
+    for (int i = 0; i < 30; ++i) {
+        room.Step(0.1f);
+    }
+
+    REQUIRE(room.FindUnit(enemy)->hp < 100.0f); // 被自动索敌的单位打到了
+}
+
+TEST_CASE("Idle unit ignores enemies beyond aggro range") {
+    DungeonRoom room(1, "r", 2);
+    const auto a = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.SpawnUnit(200, 1, 0, Vec3f{50.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    room.BeginBattle();
+
+    for (int i = 0; i < 10; ++i) {
+        room.Step(0.1f);
+    }
+
+    // 敌人在 kAggroRange 外 -> 不索敌, 原地不动
+    REQUIRE(room.FindUnit(a)->attack_target == 0);
+    REQUIRE(room.FindUnit(a)->pos.x == Approx(0.0f));
+}
+
 namespace {
 
 PendingCommand MakeHarvest(std::uint64_t owner,
