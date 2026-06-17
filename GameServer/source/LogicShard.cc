@@ -668,14 +668,34 @@ void LogicShard::LeaveRoomInternal(Uid uid) {
         return;
     }
     auto& room = room_it->second;
+
+    // 退出发生在对局进行中? (用于"对方掉线/退出 -> 剩下一方判胜")
+    const bool was_active = room.Started() && !room.IsGameOver();
+
     room.RemovePlayer(uid);
+
     if (room.Empty()) {
         rooms_.erase(room_it);
         spdlog::info("room {} removed (uid {} left/disconnected)", room_id, uid);
-    } else {
-        BroadcastRoomState(room);
-        spdlog::info("uid {} left room {}", uid, room_id);
+        return;
     }
+
+    if (was_active) {
+        // 对局中有人退出 -> 剩下的一方直接获胜
+        std::uint32_t winner_team = 0;
+        for (const auto& player : room.Players()) {
+            winner_team = player.team;
+            break;
+        }
+        room.SetGameOver(true);
+        BroadcastGameOver(room, winner_team);
+        spdlog::info("uid {} left mid-game; room {} awarded to team {}",
+                     uid, room_id, winner_team);
+        return;
+    }
+
+    BroadcastRoomState(room);
+    spdlog::info("uid {} left room {}", uid, room_id);
 }
 
 void LogicShard::HandleClientDisconnected(LogicTask task) {
@@ -802,6 +822,7 @@ void LogicShard::HandleLeaveRoom(LogicTask task) {
     }
 
     auto& room = room_it->second;
+    const bool was_active = room.Started() && !room.IsGameOver();
     if (!room.RemovePlayer(task.uid)) {
         spdlog::warn("leave failed: uid {} not in room {}", task.uid, room_id);
         return;
@@ -812,6 +833,20 @@ void LogicShard::HandleLeaveRoom(LogicTask task) {
     if (room.Empty()) {
         rooms_.erase(room_it);
         spdlog::info("room {} removed after uid {} left", room_id, task.uid);
+        return;
+    }
+
+    if (was_active) {
+        // 对局中有人退出 -> 剩下的一方直接获胜
+        std::uint32_t winner_team = 0;
+        for (const auto& player : room.Players()) {
+            winner_team = player.team;
+            break;
+        }
+        room.SetGameOver(true);
+        BroadcastGameOver(room, winner_team);
+        spdlog::info("uid {} left mid-game; room {} awarded to team {}",
+                     task.uid, room_id, winner_team);
         return;
     }
 
