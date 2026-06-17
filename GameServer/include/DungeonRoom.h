@@ -72,6 +72,7 @@ inline constexpr float kVillagerMoveSpeed = 6.0f;   // 移动速度 (对齐单�
 inline constexpr float kAggroRange = 8.0f;          // 自动索敌半径 (单机 ~10)
 inline constexpr float kAggroLeash = 14.0f;         // 自动索敌后离起点超过此距离则脱战返回
 inline constexpr std::uint32_t kAggroScanTicks = 5; // 每多少 tick 扫一次索敌(省 CPU)
+inline constexpr float kDefendRange = 3.0f;         // 忙碌单位(采集/搬运)被敌人逼近此距离即放下活计自卫
 
 // 经济 / 建造 / 生产参数 (可调)
 inline constexpr std::uint32_t kVillagerCarryCapacity = 10; // 工人背包上限
@@ -555,10 +556,20 @@ public:
                 }
             }
 
-            // 真正空闲 (无攻击目标/无工作/无移动命令) 才自动索敌, 不打扰采集/移动中的单位
-            if (do_aggro && u.attack_target == 0 &&
-                u.task == WorkerTask::None && !u.has_target) {
-                AcquireAutoTarget(u);
+            // 自动索敌: 空闲单位大范围主动索敌; 有活在身(采集/搬运)的单位仅在敌人贴脸时放下活计自卫;
+            // 被命令移动的单位不打断。
+            if (do_aggro && u.attack_target == 0) {
+                if (u.task == WorkerTask::None && !u.has_target) {
+                    AcquireAutoTarget(u);
+                } else if (u.task != WorkerTask::None) {
+                    const std::uint64_t threat = NearestEnemy(u, kDefendRange);
+                    if (threat != 0) {
+                        DropCarried(u);     // 放下背包资源
+                        ClearWorkerTask(u); // 放弃当前活计
+                        u.has_target = false;
+                        EngageAuto(u, threat);
+                    }
+                }
             }
 
             if (u.attack_target != 0) {
@@ -855,11 +866,7 @@ private:
                 continue;
             }
             auto& u = it->second;
-            // 停止时放下背包里的资源, 生成可捡的掉落物 (对齐单机)
-            if (u.carried_amount > 0) {
-                SpawnResourceDrop(u.carried_raw, u.pos, u.carried_amount);
-                u.carried_amount = 0;
-            }
+            DropCarried(u); // 停止时放下背包资源 (对齐单机)
             ClearWorkerTask(u);
             u.has_target = false;
             u.attack_target = 0;
@@ -1148,9 +1155,9 @@ private:
         dirty_.insert(u.id);
     }
 
-    // 空闲单位自动索敌 (自卫): 盯住范围内最近的敌方单位
-    void AcquireAutoTarget(Unit& u) {
-        float best_d2 = kAggroRange * kAggroRange;
+    // 范围内最近的敌方单位 id (0 = 没有); 不修改状态
+    std::uint64_t NearestEnemy(const Unit& u, float range) const {
+        float best_d2 = range * range;
         std::uint64_t best_id = 0;
         for (const auto& [id, other] : units_) {
             if (other.team == u.team || other.hp <= 0.0f) {
@@ -1164,12 +1171,31 @@ private:
                 best_id = id;
             }
         }
-        if (best_id != 0) {
-            u.attack_target = best_id;
-            u.auto_aggro = true;
-            u.aggro_origin = u.pos;
-            u.state = kStateAttacking;
-            dirty_.insert(u.id);
+        return best_id;
+    }
+
+    // 放下背包资源, 生成可捡的掉落物
+    void DropCarried(Unit& u) {
+        if (u.carried_amount > 0) {
+            SpawnResourceDrop(u.carried_raw, u.pos, u.carried_amount);
+            u.carried_amount = 0;
+        }
+    }
+
+    // 让单位转入对 target 的自动攻击 (记录索敌起点, 用于脱战返回)
+    void EngageAuto(Unit& u, std::uint64_t target) {
+        u.attack_target = target;
+        u.auto_aggro = true;
+        u.aggro_origin = u.pos;
+        u.state = kStateAttacking;
+        dirty_.insert(u.id);
+    }
+
+    // 空闲单位主动索敌 (kAggroRange)
+    void AcquireAutoTarget(Unit& u) {
+        const std::uint64_t target = NearestEnemy(u, kAggroRange);
+        if (target != 0) {
+            EngageAuto(u, target);
         }
     }
 

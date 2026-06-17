@@ -408,6 +408,36 @@ TEST_CASE("Stop drops the resource a worker is carrying") {
     REQUIRE(room.Drops().size() == drops_before + 1);          // 地上多了一个掉落物
 }
 
+TEST_CASE("A carrying worker drops its load and defends when an enemy closes in") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    const auto worker = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto field = room.SpawnResourceField(kRawWood, Vec3f{1.0f, 0.0f, 0.0f}, 100);
+    room.BeginBattle();
+
+    room.EnqueueCommand(MakeHarvest(100, {worker}, field));
+    room.ApplyPending();
+    for (int i = 0; i < 40; ++i) {
+        room.Step(0.1f);
+    }
+    REQUIRE(room.FindUnit(worker)->carried_amount > 0);
+
+    // 在工人身边放一个敌人
+    const Vec3f wpos = room.FindUnit(worker)->pos;
+    const auto enemy = room.SpawnUnit(200, 1, 0,
+        Vec3f{wpos.x + 1.0f, 0.0f, wpos.z}, 100.0f, 10.0f);
+    const std::size_t drops_before = room.Drops().size();
+
+    for (int i = 0; i < 10; ++i) {
+        room.Step(0.1f);
+    }
+
+    const Unit* w = room.FindUnit(worker);
+    REQUIRE(w->carried_amount == 0);                  // 放下了资源
+    REQUIRE(room.Drops().size() == drops_before + 1); // 地上多了掉落物
+    REQUIRE(w->attack_target == enemy);               // 转入战斗
+}
+
 TEST_CASE("Worker harvests a field and deposits resources at a dropoff") {
     DungeonRoom room(1, "r", 2);
     room.AddPlayer(100);
