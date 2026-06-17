@@ -111,7 +111,7 @@ inline float BuildingMaxHp(std::uint32_t building_type) {
     case kBuildingResourceCamp: return 200.0f;
     case kBuildingVillagerInn:  return 300.0f;
     case kBuildingBarracks:     return 400.0f;
-    case kBuildingCrystal:      return 1000.0f;
+    case kBuildingCrystal:      return 300.0f;
     default:                    return 200.0f;
     }
 }
