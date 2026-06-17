@@ -855,6 +855,11 @@ private:
                 continue;
             }
             auto& u = it->second;
+            // 停止时放下背包里的资源, 生成可捡的掉落物 (对齐单机)
+            if (u.carried_amount > 0) {
+                SpawnResourceDrop(u.carried_raw, u.pos, u.carried_amount);
+                u.carried_amount = 0;
+            }
             ClearWorkerTask(u);
             u.has_target = false;
             u.attack_target = 0;

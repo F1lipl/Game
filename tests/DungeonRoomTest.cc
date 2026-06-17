@@ -381,6 +381,33 @@ TEST_CASE("Move with a waypoint path follows the polyline, not a straight line")
     REQUIRE(end->state == 0); // 到达后 idle
 }
 
+TEST_CASE("Stop drops the resource a worker is carrying") {
+    DungeonRoom room(1, "r", 2);
+    room.AddPlayer(100);
+    const auto worker = room.SpawnUnit(100, 0, 0, Vec3f{0.0f, 0.0f, 0.0f}, 100.0f, 10.0f);
+    const auto field = room.SpawnResourceField(kRawWood, Vec3f{1.0f, 0.0f, 0.0f}, 100);
+    room.BeginBattle();
+
+    room.EnqueueCommand(MakeHarvest(100, {worker}, field));
+    room.ApplyPending();
+    for (int i = 0; i < 40; ++i) {
+        room.Step(0.1f);
+    }
+    REQUIRE(room.FindUnit(worker)->carried_amount > 0); // 背包里已有货
+
+    const std::size_t drops_before = room.Drops().size();
+
+    PendingCommand stop;
+    stop.type = CommandType::Stop;
+    stop.owner_uid = 100;
+    stop.unit_ids = {worker};
+    room.EnqueueCommand(stop);
+    room.ApplyPending();
+
+    REQUIRE(room.FindUnit(worker)->carried_amount == 0);       // 放下了
+    REQUIRE(room.Drops().size() == drops_before + 1);          // 地上多了一个掉落物
+}
+
 TEST_CASE("Worker harvests a field and deposits resources at a dropoff") {
     DungeonRoom room(1, "r", 2);
     room.AddPlayer(100);
